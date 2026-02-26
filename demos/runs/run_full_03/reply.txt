@@ -1,0 +1,1 @@
+RID=43cc3c1058 ok:screenshot file=C:/Users/sergey.gromov/Documents/AI/RL_msx/demos/runs/run_full_03/step_frame.png t=1772086899403

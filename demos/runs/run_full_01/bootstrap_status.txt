@@ -1,1 +1,1 @@
-ok:bootstrap poll=6549 cmd_exists=1 cmd_size=403
+ok:bootstrap poll=6090 cmd_exists=1 cmd_size=0

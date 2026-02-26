@@ -6,4 +6,4 @@ proc __reply {msg} {
 }
 
 screenshot {C:/Users/sergey.gromov/Documents/AI/RL_msx/checkpoints/bc/run/step_frame.png}
-__reply "RID=9be85dd645 ok:screenshot file=C:/Users/sergey.gromov/Documents/AI/RL_msx/checkpoints/bc/run/step_frame.png t=[clock milliseconds]"
+__reply "RID=750769a4a8 ok:screenshot file=C:/Users/sergey.gromov/Documents/AI/RL_msx/checkpoints/bc/run/step_frame.png t=[clock milliseconds]"

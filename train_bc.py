@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
 
 from msx_env.dataset import load_demo_run
 from msx_env.env import NUM_ACTIONS
-from msx_env.bc_model import BCNet
+from msx_env.bc_model import BCNet, BCNetDeep, FRAME_STACK
 
 
 def discover_runs(demos_runs: Path) -> list[Path]:
@@ -46,6 +46,17 @@ def load_all_demos(run_dirs: list[Path]) -> tuple[np.ndarray, np.ndarray]:
     return obs, actions
 
 
+def build_stacked_obs(obs: np.ndarray, stack_size: int) -> np.ndarray:
+    """По однокадровым obs (N, H, W) собрать стопки (N, stack_size, H, W). Первые шаги дополняются первым кадром."""
+    n, h, w = obs.shape
+    out = np.zeros((n, stack_size, h, w), dtype=obs.dtype)
+    for t in range(n):
+        for s in range(stack_size):
+            src = max(0, t - (stack_size - 1) + s)
+            out[t, s] = obs[src]
+    return out
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Behavior Cloning на демонстрациях Vampire Killer")
     p.add_argument(
@@ -62,6 +73,15 @@ def parse_args() -> argparse.Namespace:
     # Смещение в сторону действий (меньше NOOP в предсказаниях)
     p.add_argument("--noop-weight", type=float, default=0.5, help="вес класса NOOP в loss (меньше 1 = реже предсказывать NOOP)")
     p.add_argument("--oversample", type=float, default=2.0, help="во сколько раз чаще сэмплировать шаги с action!=NOOP")
+    p.add_argument("--frame-stack", type=int, default=FRAME_STACK, help="число кадров в стопке (4 — рекомендуется)")
+    p.add_argument("--deep", action="store_true", help="усиленная сеть (BCNetDeep): лучше прыжки/удары/свечки")
+    p.add_argument("--rare-weight", type=float, default=1.5, help="доп. вес редких действий (ATTACK, прыжки) в loss")
+    p.add_argument(
+        "--move-weight",
+        type=float,
+        default=1.6,
+        help="вес движения RIGHT/LEFT/UP/DOWN в loss; приоритет «идти по лабиринту (в т.ч. по лестницам)», а не стоять и бить",
+    )
     return p.parse_args()
 
 
@@ -90,24 +110,44 @@ def main() -> None:
     n_action = n - n_noop
     print(f"Всего сэмплов: {n}  (NOOP: {n_noop}, действия: {n_action})")
 
+    stack_size = max(1, int(args.frame_stack))
+    if stack_size > 1:
+        obs_stacked = build_stacked_obs(obs, stack_size)  # (N, stack_size, 84, 84)
+        print(f"Frame stack: {stack_size} кадров")
+    else:
+        obs_stacked = obs[:, np.newaxis, :, :]  # (N, 1, 84, 84)
+
     device = torch.device(args.device)
     dataset = TensorDataset(
-        torch.from_numpy(obs).unsqueeze(1),  # (N, 1, 84, 84)
+        torch.from_numpy(obs_stacked),
         torch.from_numpy(actions),
     )
-    # Oversampling: чаще подаём примеры с action != NOOP
-    weights = np.where(actions == 0, 1.0, float(args.oversample))
-    sampler = WeightedRandomSampler(weights, num_samples=len(weights))
+    # Oversampling: движение (RIGHT/LEFT/UP/DOWN) — чаще всего; редкие (прыжки, удар) — чаще; NOOP — реже
+    rare_actions = {5, 6, 7, 8, 9}  # ATTACK, jump*, jump+attack
+    move_actions = {1, 2, 3, 4}  # RIGHT, LEFT, UP, DOWN — приоритет: идти к выходу/ключу, ходить по лестницам, подбирать призы
+    sample_w = np.ones(n, dtype=np.float64)
+    sample_w[actions == 0] = 1.0
+    sample_w[np.isin(actions, list(move_actions))] = float(args.oversample) * 1.4  # движение важнее
+    sample_w[(actions != 0) & np.isin(actions, list(rare_actions)) & ~np.isin(actions, list(move_actions))] = float(args.oversample) * 1.2
+    sample_w[(actions != 0) & ~np.isin(actions, list(rare_actions)) & ~np.isin(actions, list(move_actions))] = float(args.oversample)
+    sampler = WeightedRandomSampler(sample_w, num_samples=len(sample_w))
     loader = DataLoader(
         dataset, batch_size=args.batch_size, sampler=sampler, num_workers=0
     )
 
-    # Взвешенный loss: за ошибки по ненулевым действиям штрафуем сильнее
+    # Взвешенный loss: NOOP слабее; движение (RIGHT/LEFT) сильнее всего; редкие (ATTACK, прыжки) сильнее
     class_weights = torch.ones(NUM_ACTIONS, device=device)
     class_weights[0] = args.noop_weight
+    for a in move_actions:
+        if a < NUM_ACTIONS:
+            class_weights[a] = args.move_weight
+    for a in rare_actions:
+        if a < NUM_ACTIONS:
+            class_weights[a] = args.rare_weight
     criterion = nn.CrossEntropyLoss(weight=class_weights)
 
-    model = BCNet(num_actions=NUM_ACTIONS).to(device)
+    model_cls = BCNetDeep if args.deep else BCNet
+    model = model_cls(num_actions=NUM_ACTIONS, in_channels=stack_size).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     ckpt_dir = ROOT / args.checkpoint_dir
@@ -128,13 +168,18 @@ def main() -> None:
         mean_loss = total_loss / len(loader)
         print(f"Epoch {epoch+1}/{args.epochs}  loss={mean_loss:.4f}")
 
+        ckpt = {
+            "state_dict": model.state_dict(),
+            "frame_stack": stack_size,
+            "arch": "deep" if args.deep else "default",
+        }
         if mean_loss < best_loss:
             best_loss = mean_loss
-            torch.save(model.state_dict(), ckpt_dir / "best.pt")
-        torch.save(model.state_dict(), ckpt_dir / "last.pt")
+            torch.save(ckpt, ckpt_dir / "best.pt")
+        torch.save(ckpt, ckpt_dir / "last.pt")
 
-    print(f"Чекпоинты сохранены в {ckpt_dir}: best.pt, last.pt")
-    print(f"Параметры: noop_weight={args.noop_weight}, oversample={args.oversample}, epochs={args.epochs}")
+    print(f"Чекпоинты сохранены в {ckpt_dir}: best.pt, last.pt (frame_stack={stack_size}, arch={'deep' if args.deep else 'default'})")
+    print(f"Параметры: noop_weight={args.noop_weight}, oversample={args.oversample}, move_weight={args.move_weight}, rare_weight={args.rare_weight}, epochs={args.epochs}")
 
 
 if __name__ == "__main__":

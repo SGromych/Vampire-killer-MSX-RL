@@ -32,6 +32,7 @@ class EnvConfig:
     rom_path: str
     workdir: str
     frame_size: Tuple[int, int] = (84, 84)
+    poll_ms: int = 15  # интервал опроса openMSX (меньше = быстрее реакция)
 
 
 class VampireKillerEnv:
@@ -53,7 +54,7 @@ class VampireKillerEnv:
             self._emu = OpenMSXFileControl(
                 rom_path=self.cfg.rom_path,
                 workdir=self.cfg.workdir,
-                poll_ms=20,
+                poll_ms=getattr(self.cfg, "poll_ms", 15),
                 boot_timeout_s=30.0,
             )
         return self._emu
@@ -89,26 +90,27 @@ class VampireKillerEnv:
         return arr
 
     def _apply_action(self, emu: OpenMSXFileControl, action: int) -> None:
+        # Чуть короче hold_ms — быстрее отзывчивость (лаги)
         if action == ACTION_NOOP:
             return
         elif action == ACTION_RIGHT:
-            emu.press("RIGHT", hold_ms=120)
+            emu.press("RIGHT", hold_ms=100)
         elif action == ACTION_LEFT:
-            emu.press("LEFT", hold_ms=120)
+            emu.press("LEFT", hold_ms=100)
         elif action == ACTION_UP:
-            emu.press("UP", hold_ms=200)
+            emu.press("UP", hold_ms=180)
         elif action == ACTION_DOWN:
-            emu.press("DOWN", hold_ms=200)
+            emu.press("DOWN", hold_ms=180)
         elif action == ACTION_ATTACK:
-            emu.press("SPACE", hold_ms=120)
+            emu.press("SPACE", hold_ms=100)
         elif action == ACTION_RIGHT_JUMP:
-            emu.press_combo(["RIGHT", "UP"], hold_ms=220)
+            emu.press_combo(["RIGHT", "UP"], hold_ms=200)
         elif action == ACTION_LEFT_JUMP:
-            emu.press_combo(["LEFT", "UP"], hold_ms=220)
+            emu.press_combo(["LEFT", "UP"], hold_ms=200)
         elif action == ACTION_RIGHT_JUMP_ATTACK:
-            emu.press_combo(["RIGHT", "UP", "SPACE"], hold_ms=220)
+            emu.press_combo(["RIGHT", "UP", "SPACE"], hold_ms=200)
         elif action == ACTION_LEFT_JUMP_ATTACK:
-            emu.press_combo(["LEFT", "UP", "SPACE"], hold_ms=220)
+            emu.press_combo(["LEFT", "UP", "SPACE"], hold_ms=200)
         else:
             raise ValueError(f"Unknown action id: {action}")
 

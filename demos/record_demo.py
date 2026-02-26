@@ -21,7 +21,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--run-id", required=True)
     p.add_argument("--max-steps", type=int, default=2000)
     p.add_argument("--max-minutes", type=float, default=3.0)
-    p.add_argument("--fps", type=int, default=10)
+    p.add_argument("--fps", type=int, default=15, help="частота опроса клавиш (15–20 уменьшает лаги)")
+    p.add_argument("--poll-ms", type=int, default=15, help="интервал опроса openMSX (мс), меньше = быстрее реакция")
     p.add_argument("--save-raw-every", type=int, default=0, help="зарезервировано, пока не используется")
     p.add_argument("--preview", action="store_true")
     return p.parse_args()
@@ -44,6 +45,7 @@ def main() -> None:
             rom_path=str(rom),
             workdir=str(run_dir),
             frame_size=(84, 84),
+            poll_ms=args.poll_ms,
         )
     )
     controller = HumanController(HumanControllerConfig(fps=args.fps))

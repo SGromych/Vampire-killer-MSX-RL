@@ -39,11 +39,11 @@ proc __poll_commands {} {
         close $f
     }
 
-    after 20 __poll_commands
+    after 10 __poll_commands
 }
 
 __write_reply "ok:bootstrap starting"
-after 20 __poll_commands
+after 10 __poll_commands
 
 # Load ROM
 carta {C:/Users/sergey.gromov/Documents/AI/RL_msx/VAMPIRE.ROM}

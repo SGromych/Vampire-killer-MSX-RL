@@ -1,1 +1,1 @@
-RID=6e8bcad4b6 ok:press key=RIGHT row=8 mask=128 hold_ms=120 t=1772001202645
+RID=180ea0fdb1 ok:press key=SPACE row=8 mask=1 hold_ms=100 t=1772090133266

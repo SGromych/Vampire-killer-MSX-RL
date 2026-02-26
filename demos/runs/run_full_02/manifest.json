@@ -11,20 +11,20 @@
       84
     ],
     "obs_dtype": "uint8",
-    "step_rate_hz": 10.0,
-    "created_at": 1771999525.9691386,
-    "total_steps": 972,
+    "step_rate_hz": 20.0,
+    "created_at": 1772089270.0153568,
+    "total_steps": 2137,
     "max_minutes": 30.0,
     "run_id": "run_full_02"
   },
   "files": {
     "data.npz": {
-      "sha1": "d157a3a64023b879496fafe74473ac6d1619e6bc",
-      "size": 508900
+      "sha1": "915117d873f596cca8724f8e120cb309a81982c0",
+      "size": 994980
     }
   },
   "frame_hashes": {
-    "first": "647d973ea66fcccccdf7fbb08c8ea60d545d3dbe",
-    "last": "4060937d75b091777428807f20608ec0bb08eb10"
+    "first": "a029d55968dbcd7db2a12327830843827baef248",
+    "last": "008d597e3eff0194011ac7245ff9c4938e20589a"
   }
 }

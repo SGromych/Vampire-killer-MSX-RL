@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "version": 1,
+    "game_id": "vampire_killer_msx2",
+    "machine_config": "default",
+    "rom_path": "C:\\Users\\sergey.gromov\\Documents\\AI\\RL_msx\\VAMPIRE.ROM",
+    "action_set_version": "vkiller_v1",
+    "obs_shape": [
+      84,
+      84
+    ],
+    "obs_dtype": "uint8",
+    "step_rate_hz": 10.0,
+    "created_at": 1771999007.668902,
+    "total_steps": 1332,
+    "max_minutes": 30.0,
+    "run_id": "run_full_01"
+  },
+  "files": {
+    "data.npz": {
+      "sha1": "aabdbe049047324ef7bffdb294460f5d1be0e1eb",
+      "size": 731301
+    }
+  },
+  "frame_hashes": {
+    "first": "647d973ea66fcccccdf7fbb08c8ea60d545d3dbe",
+    "last": "e276e685d203e518b17ef7fcdfb180536bc0948d"
+  }
+}

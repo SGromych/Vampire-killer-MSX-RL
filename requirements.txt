@@ -1,0 +1,8 @@
+Pillow>=9.0.0      # для анализа кадров (wait_for_nonblue_screen и obs)
+pyautogui>=0.9.0   # для press_host (опционально, сейчас не нужен для демозаписи)
+pygetwindow>=0.0.9 # для ensure_focus (опционально)
+numpy>=1.24.0
+pygame>=2.5.0
+imageio>=2.34.0
+imageio-ffmpeg>=0.4.0
+torch>=2.0.0

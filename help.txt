@@ -1,0 +1,116 @@
+=== help ===
+Use 'help [command]' to get help for a specific command
+The following commands exist:
+about                   poke16                              vdpregs
+activate_input_layer    poke16_BE                           vdpstatus
+activate_machine        poke16_LE                           vdpvramaddress
+address_in_slot         poke8                               vdrive
+advance_frame           prev_frame                          vgm_rec
+after                   psg_log                             virtual_drive
+bind                    psg_profile                         vpeek
+bind_default            ram_watch                           vpoke
+cart                    record                              vram2bmp
+carta                   record_channels                     watch_in_slot
+cartb                   record_chunks
+caseject                record_chunks_on_framerate_changes
+caslist                 reg
+casload                 reg_log
+caspos                  remove_extension
+casrun                  reset
+cassave                 restore_machine
+cassetteplayer          reverse
+cpuregs                 reverse_bookmarks
+create_machine          reverse_frame
+create_power_bar        reverse_next
+cycle                   reverse_prev
+cycle_back              rom_info
+cycle_back_machine      run_to
+cycle_machine           save_breakpoints
+data_file               save_debuggable
+deactivate_input_layer  save_msx_screen
+debug                   save_session
+delete_machine          save_settings
+delete_savestate        save_to_file
+delete_session          savestate
+disasm                  screenshot
+diskmanipulator         sdcdb
+escape_grab             set
+exit                    set_clipboard_text
+ext                     set_help_proc
+exta                    set_help_text
+extb                    set_tabcompletion_proc
+filepool                setcolor
+findcheat               setup
+get_active_cpu          sha1sum
+get_breakpoints_dir     show_osd
+get_clipboard_text      showdebuggable
+get_color_count         showmem
+get_mapper_size         shuffler
+get_screen              skip_instruction
+get_screen_mode         slotmap
+get_screen_mode_number  slotselect
+get_selected_slot       solo
+getcolor                soundlog
+guess_title             stack
+help                    start_of_frame
+incr                    step
+iomap                   step_back
+keymatrixdown           step_in
+keymatrixup             step_out
+list_extensions         step_over
+list_machines           store_machine
+list_savestates         store_setup
+list_sessions           tabcompletion
+listing                 test_all_extensions
+load_breakpoints        test_all_machines
+load_debuggable         test_machine
+load_machine            text_echo
+load_session            toggle
+load_settings           toggle_breaked
+loadstate               toggle_frame_counter
+machine                 toggle_freq
+machine_info            toggle_metal_gear_overlay
+message                 toggle_mog_editor
+monitor_type            toggle_mog_overlay
+msxcode2unicode         toggle_movie_length_display
+multi_screenshot        toggle_music_keyboard
+mute_channels           toggle_nemesis_1_shield
+next_frame              toggle_scc_viewer
+openmsx_info            toggle_vdp_access_test
+openmsx_update          trainer
+osd                     type
+palette                 type_from_file
+pc_in_slot              type_password_from_file
+peek                    type_via_keyboard
+peek16                  type_via_keybuf
+peek16_BE               umrcallback
+peek16_LE               unbind
+peek8                   unbind_default
+peek_s16                unicode2msxcode
+peek_s16_BE             unmute_channels
+peek_s16_LE             unplug
+peek_s8                 unset
+peek_u16                update_power_bar
+peek_u16_BE             user_setting
+peek_u16_LE             v9990reg
+peek_u8                 v9990regs
+plug                    vdpcmdinprogresscallback
+poke                    vdpreg
+
+
+=== help screenshot ===
+screenshot                   Write screenshot to file "openmsxNNNN.png"
+screenshot <filename>        Write screenshot to indicated file
+screenshot -prefix foo       Write screenshot to file "fooNNNN.png"
+screenshot -raw -size 640    640x480 raw screenshot (of MSX screen only)
+screenshot -raw -size 320    320x240 raw screenshot (of MSX screen only)
+screenshot -raw -size auto   raw screenshot (of MSX screen only), with size determined by screen mode
+screenshot -raw              raw screenshot (of MSX screen only), default -size (auto)
+screenshot -with-osd         Include OSD elements in the screenshot
+screenshot -no-sprites       Don't include sprites in the screenshot
+screenshot -guess-name       Guess the name of the running software and use it as prefix
+
+
+=== help keymatrixdown ===
+keymatrixdown <row> <bitmask>  press a key in the keyboard matrix
+

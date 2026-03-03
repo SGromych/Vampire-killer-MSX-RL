@@ -1,0 +1,1 @@
+{"num_envs":2,"max_updates":5000,"checkpoint_every":50,"restart_limit":20,"watchdog_timeout_minutes":60,"entropy_floor":0.3,"auto_entropy_boost":0,"run_name":"auto_night","checkpoint_dir":"checkpoints/ppo","restart_delay_seconds":30,"nudge_right_steps":0,"stuck_nudge_steps":20,"novelty_reward":0.35,"recurrent":true,"use_runs_dir":true}

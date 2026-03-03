@@ -25,6 +25,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--poll-ms", type=int, default=15, help="интервал опроса openMSX (мс), меньше = быстрее реакция")
     p.add_argument("--save-raw-every", type=int, default=0, help="зарезервировано, пока не используется")
     p.add_argument("--preview", action="store_true")
+    p.add_argument("--action-repeat", type=int, default=1, help="N внутр. шагов на 1 захват (1 = backward compat)")
+    p.add_argument("--decision-fps", type=float, default=None, help="частота решений (10–15 Hz), None=макс.")
+    p.add_argument("--capture-backend", choices=["png", "single", "window"], default="png")
     return p.parse_args()
 
 
@@ -46,6 +49,9 @@ def main() -> None:
             workdir=str(run_dir),
             frame_size=(84, 84),
             poll_ms=args.poll_ms,
+            action_repeat=args.action_repeat,
+            decision_fps=args.decision_fps,
+            capture_backend=args.capture_backend,
         )
     )
     controller = HumanController(HumanControllerConfig(fps=args.fps))

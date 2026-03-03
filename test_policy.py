@@ -34,8 +34,20 @@ def parse_args() -> argparse.Namespace:
         "--max-idle-steps",
         type=int,
         default=0,
-        help="анти-залипание: если N шагов подряд нет движения (RIGHT/LEFT/UP/DOWN), принудительно повторить последнее движение; 0=выкл",
+        help="анти-залипание: если N шагов подряд нет движения (RIGHT/LEFT/UP/DOWN), принудительно повторить последнее движение; 0=выкл, 40–50 рекомендуется",
     )
+    p.add_argument(
+        "--transition-assist",
+        action="store_true",
+        help="при резкой смене кадра (переход между экранами) при NOOP повторять последнее движение 1–2 шага — меньше глюков у дверей",
+    )
+    p.add_argument(
+        "--stair-assist-steps",
+        type=int,
+        default=0,
+        help="если N шагов подряд только RIGHT/LEFT (без UP/DOWN) — попробовать UP (лестница); 0=выкл, 40–60 рекомендуется",
+    )
+    p.add_argument("--capture-backend", choices=["png", "single"], default="png")
     return p.parse_args()
 
 
@@ -55,7 +67,12 @@ def main() -> None:
 
     workdir = args.workdir or str(ROOT / "checkpoints" / "bc" / "run")
     env = VampireKillerEnv(
-        EnvConfig(rom_path=str(rom), workdir=workdir, frame_size=(84, 84))
+        EnvConfig(
+            rom_path=str(rom),
+            workdir=workdir,
+            frame_size=(84, 84),
+            capture_backend=getattr(args, "capture_backend", "png"),
+        )
     )
 
     frame_buffer: deque[np.ndarray] = deque(maxlen=stack_size)
@@ -73,6 +90,9 @@ def main() -> None:
         last_non_noop: int | None = None
         last_move_action: int | None = None
         idle_steps = 0
+        transition_cooldown = 0
+        horizontal_only_steps = 0  # только RIGHT/LEFT без UP/DOWN
+        stair_assist_cooldown = 0  # после попытки UP — пауза
 
         while step < args.max_steps:
             stack = np.stack(list(frame_buffer), axis=0).astype(np.float32) / 255.0  # (stack_size, 84, 84)
@@ -88,10 +108,14 @@ def main() -> None:
                     action = int(np.argmax(counts))
             if args.sticky and action == 0 and last_non_noop is not None:
                 action = last_non_noop
+            if args.transition_assist and transition_cooldown > 0 and action == 0 and last_non_noop is not None:
+                action = last_non_noop
+            if transition_cooldown > 0:
+                transition_cooldown -= 1
             if action != 0:
                 last_non_noop = action
 
-            # Анти-залипание: если давно не двигались (RIGHT/LEFT/UP/DOWN), можем принудительно повторить последнее движение
+            # Анти-залипание: если давно не двигались (RIGHT/LEFT/UP/DOWN), принудительно повторить последнее движение
             move_actions = {1, 2, 3, 4}
             if action in move_actions:
                 idle_steps = 0
@@ -105,9 +129,37 @@ def main() -> None:
                     action = 1  # по умолчанию пойдём вправо
                 idle_steps = 0
 
+            # Лестничная помощь: бесконечный right-left — попробовать UP
+            if args.stair_assist_steps > 0:
+                if action in {1, 2}:
+                    horizontal_only_steps += 1
+                elif action in {3, 4}:
+                    horizontal_only_steps = 0
+                else:
+                    horizontal_only_steps = 0
+                if (
+                    stair_assist_cooldown <= 0
+                    and horizontal_only_steps >= args.stair_assist_steps
+                ):
+                    action = 3  # UP — попробовать лестницу
+                    horizontal_only_steps = 0
+                    stair_assist_cooldown = 60
+                if stair_assist_cooldown > 0:
+                    stair_assist_cooldown -= 1
+
             obs, reward, terminated, truncated, info = env.step(action)
             frame_buffer.append(obs.copy())
             step += 1
+
+            # Детекция перехода между экранами: резкое изменение кадра → продолжать движение
+            # При наличии ключа — агрессивнее (вероятно ищем выход)
+            if args.transition_assist and len(frame_buffer) >= 2:
+                curr, prev = frame_buffer[-1].astype(np.float32), frame_buffer[-2].astype(np.float32)
+                diff = np.abs(curr - prev).mean() / 255.0
+                has_key = bool(info.get("hud", {}).get("key_door") or info.get("hud", {}).get("key_chest"))
+                thr, cooldown = (0.28, 4) if has_key else (0.35, 2)
+                if diff > thr:
+                    transition_cooldown = max(transition_cooldown, cooldown)
 
             life = get_life_estimate(obs)
             if (
@@ -132,6 +184,10 @@ def main() -> None:
             opts.append("sticky")
         if args.max_idle_steps:
             opts.append(f"anti-stall={args.max_idle_steps}")
+        if args.transition_assist:
+            opts.append("transition-assist")
+        if args.stair_assist_steps:
+            opts.append(f"stair-assist={args.stair_assist_steps}")
         print(f"Итого шагов: {step}" + (f"  [{', '.join(opts)}]" if opts else ""))
     finally:
         env.close()

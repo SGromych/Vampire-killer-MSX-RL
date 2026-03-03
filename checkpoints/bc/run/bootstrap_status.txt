@@ -1,1 +1,0 @@
-ok:bootstrap poll=9094 cmd_exists=1 cmd_size=0

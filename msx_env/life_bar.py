@@ -1,6 +1,7 @@
 """
 Оценка полоски жизни (PLAYER) по кадру для Vampire Killer.
 Полоска вверху экрана; при ударе врагов уменьшается, при нуле — смерть.
+Число жизней отображается в HUD как P-XX (см. docs/VAMPIRE_KILLER_SPEC.md).
 """
 from __future__ import annotations
 

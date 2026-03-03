@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.log
+*.mp4
+*.png
+*.pth
+*.pt
+*.zip
+runs/
+checkpoints/
+videos/
+roms/
+.env

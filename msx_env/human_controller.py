@@ -60,7 +60,7 @@ class HumanController:
         up = keys[pygame.K_UP]
         down = keys[pygame.K_DOWN]
         attack_key = keys[pygame.K_z] or keys[pygame.K_SPACE]
-        jump_key = keys[pygame.K_x]  # если нужен отдельный прыжок
+        jump_key = keys[pygame.K_x]  # или стрелка вверх
 
         # Комбинации приоритетнее одиночных направлений
         if (right and up) or (right and jump_key):

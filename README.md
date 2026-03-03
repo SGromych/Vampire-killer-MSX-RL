@@ -1,6 +1,11 @@
 ## Контекст и решения
 
-Краткий контекст проекта, архитектура и решения задокументированы в **`docs/CONTEXT.md`** (откуда подтягивать данные, frame stacking, полоска жизни, лаги).
+- **`docs/SESSION.md`** — **точка входа для нового чата**: саммари проекта, недавние правки, ключевые пути и команды. При необходимости смотреть `docs/MODULES_AND_FLAGS.md` и `docs/CONTEXT.md`.
+- **`docs/CONTEXT.md`** — контекст проекта, архитектура, ключевые решения (frame stacking, полоска жизни, лаги).
+- **`docs/MODULES_AND_FLAGS.md`** — справочник по модулям, флагам и выходам: скрипты, чекпоинты, логи, запуск обучения и тестов.
+- **`docs/TRAINING.md`** — PPO: аудит обучения, стабильность, система экспериментов (--run-name, --config, --reward-config), guardrails, отладка.
+- **`docs/REWARD.md`** — система наград (компоненты, масштабы, отладка, v1).
+- **`docs/CAPTURE.md`** — бэкенды захвата кадра (png, single, window), калибровка окна, бенчмарк.
 
 ---
 
@@ -121,15 +126,36 @@ python train_bc.py --runs run_full_01 run_full_02 --epochs 40 --frame-stack 4 --
 python test_policy.py --checkpoint checkpoints/bc/best.pt --max-steps 2000
 python test_policy.py --checkpoint checkpoints/bc/best.pt --stop-on-death
 python test_policy.py --checkpoint checkpoints/bc/best.pt --smooth 5 --sticky
+# Рекомендуется: анти-залипание, переходы, лестницы (при right-left цикле)
+python test_policy.py --checkpoint checkpoints/bc/best.pt --smooth 3 --sticky --max-idle-steps 40 --transition-assist --stair-assist-steps 50
 ```
 
-Логи и скриншоты openMSX при тесте пишутся в `checkpoints/bc/run/` (или в `--workdir`, если указан). Оценка полоски жизни (PLAYER) — в `msx_env.life_bar`; при `--stop-on-death` при резком падении жизни прогон завершается.
+Логи и скриншоты openMSX при тесте пишутся в `checkpoints/bc/run/` (или в `--workdir`, если указан). Оценка полоски жизни (PLAYER) — в `msx_env.life_bar`; при `--stop-on-death` при резком падении жизни прогон завершается. **Reward за подбор** (оружие, ключи, предметы) считается по HUD (`msx_env.hud_parser`) и отдаётся в `step()` — пригоден для будущего RL; в BC не используется.
 
 ### Откуда подтягивать данные при обучении
 
 - **Демонстрации**: каталоги `demos/runs/<run_id>/`, в каждом — `data.npz` и `manifest.json`.
+- **Загрузка**: `from msx_env.dataset import load_demo_run`.
 - **Загрузка в коде**: `from msx_env.dataset import load_demo_run`; затем `obs, actions, ... = load_demo_run(Path("demos/runs/run_full_01"))`.
-- **Чекпоинты BC**: `checkpoints/bc/best.pt` (или `last.pt`) — `state_dict`, `frame_stack`, `arch`; модель `BCNet` или `BCNetDeep` из `msx_env.bc_model`.
+- **Чекпоинты BC**: `checkpoints/bc/best.pt`; **PPO**: `checkpoints/ppo/last.pt`.
+
+---
+
+## PPO (Reinforcement Learning)
+
+PPO обучает политику по reward (подбор предметов, смерть). BC остаётся доступен через `test_policy.py`.
+
+### Обучение PPO (инициализация из BC)
+
+```bash
+python train_ppo.py --bc-checkpoint checkpoints/bc/best.pt --epochs 100 --arch deep
+```
+
+### Тест PPO
+
+```bash
+python test_ppo.py --checkpoint checkpoints/ppo/last.pt --deterministic --smooth 3 --sticky
+```
 
 #   V a m p i r e - k i l l e r - M S X - R L 
  

@@ -8,7 +8,7 @@
 
 - Обучить агента играть в Vampire Killer (Konami, MSX2) через эмулятор openMSX.
 - **Приоритет в игре**: идти по уровню, подбирать призы (сердечки и др.), найти ключ и выход из лабиринта. Убивать врагов — чтобы не умереть, а не как основная цель.
-- Цепочка: **запись человеческих демо** (с акцентом на движение и исследование) → **Behavior Cloning (BC)** с приоритетом движения (`--move-weight`) → (позже) **RL (PPO/DQN)** с наградой за прогресс/выход.
+- Цепочка: **запись демо** → **BC** (имитация) → **PPO** (RL по reward). BC остаётся вызовом через `test_policy.py`; PPO — через `test_ppo.py`.
 
 ---
 
@@ -16,10 +16,11 @@
 
 - **Управление openMSX**: file-based loop (Windows): Python пишет `commands.tcl`, bootstrap.tcl опрашивает и выполняет, ответ в `reply.txt`. Клавиши — через keymatrix (`keymatrixdown`/`keymatrixup`) и команду `type` (SPACE/Enter для меню).
 - **Окружение**: `msx_env.env.VampireKillerEnv` — Gym-подобный env: `reset()` (пропуск заставки, два SPACE), `step(action)` (применение действия, скриншот, obs 84×84 grayscale).
-- **Действия**: 10 дискретных (NOOP, RIGHT, LEFT, UP, DOWN, ATTACK, RIGHT_JUMP, LEFT_JUMP, RIGHT_JUMP_ATTACK, LEFT_JUMP_ATTACK).
+- **Действия**: 10 дискретных (NOOP, RIGHT, LEFT, UP, DOWN, ATTACK, RIGHT_JUMP, LEFT_JUMP, RIGHT_JUMP_ATTACK, LEFT_JUMP_ATTACK). UP — и подъём, и прыжок (игра не реагирует на другие клавиши).
 - **Демозапись**: `demos/record_demo.py` — человек играет в окне pygame (клавиши мапятся в action id), запись в `demos/runs/<run_id>/data.npz` + `manifest.json`. Валидация: число шагов, распределение действий, отличие кадров, опционально preview.mp4.
 - **Обучение BC**: `train_bc.py` — загрузка всех/указанных прогонов, CNN (BCNet или BCNetDeep) с frame stacking 4 кадра, взвешенный loss: NOOP слабее; **движение (RIGHT/LEFT/UP/DOWN) сильнее** (`--move-weight`, по умолчанию 1.6) — приоритет «идти по лабиринту (включая лестницы вверх/вниз) и к выходу»; редкие действия (ATTACK и прыжки) усилены (`--rare-weight`). Oversampling чаще подаёт шаги с движением и редкими действиями. Флаг `--deep` даёт BCNetDeep; в чекпоинте сохраняется `arch`. Чекпоинты в `checkpoints/bc/`.
-- **Тест политики**: `test_policy.py` — загрузка best.pt (по `arch` подбирается BCNet/BCNetDeep), цикл obs → модель → action → env.step; опции: `--stop-on-death`, `--smooth N` (majority vote по последним N действиям), `--sticky` (при NOOP повторить последнее ненулевое действие).
+- **Тест BC**: `test_policy.py` — чекпоинт `checkpoints/bc/`; цикл obs → BCNet → action → env.step; `--smooth`, `--sticky`, `--max-idle-steps`, `--transition-assist`.
+- **PPO (RL)**: `train_ppo.py` — обучение ActorCritic по reward (HUD подбор + штраф за смерть). Инициализация из BC (`--bc-checkpoint`). `test_ppo.py` — тест PPO-политики. Чекпоинты в `checkpoints/ppo/`.
 
 ---
 
@@ -38,11 +39,15 @@
 | Назначение | Путь |
 |------------|------|
 | Контекст и решения | `docs/CONTEXT.md` (этот файл) |
+| Спецификация игры (запуск, HUD, уровни, смерть) | `docs/VAMPIRE_KILLER_SPEC.md` |
+| Предметы и награды (ключи, оружие, сердца, слоты) | `docs/ITEMS_AND_REWARDS.md` |
 | Демо (сырые данные) | `demos/runs/<run_id>/data.npz`, `manifest.json` |
 | Логи/скриншоты рана | `demos/runs/<run_id>/openmsx_*.log`, `step_frame.png` |
-| Чекпоинты BC | `checkpoints/bc/best.pt`, `last.pt` (в чекпоинте сохранён frame_stack для совместимости) |
+| Чекпоинты BC | `checkpoints/bc/best.pt`, `last.pt` |
+| Чекпоинты PPO | `checkpoints/ppo/last.pt`, `epoch_*.pt` |
 | Схема датасета, валидация | `msx_env/dataset.py` |
 | Модель BC (frame stack) | `msx_env/bc_model.py` |
+| Модель PPO (ActorCritic) | `msx_env/ppo_model.py`; подробно — `docs/PPO_MODEL.md` |
 | Оценка полоски жизни | `msx_env/life_bar.py` |
 
 ---
@@ -52,6 +57,7 @@
 - **poll_ms** (интервал опроса commands.tcl в openMSX): по умолчанию 20 ms; можно 15 ms в EnvConfig для более быстрой реакции.
 - **fps** при записи демо: 10 → 15 или 20 (чаще опрос клавиш).
 - **hold_ms** действий: слегка уменьшены (например 100 ms для движения), чтобы нажатия короче и отзывчивее.
+- **hold_keys** (по умолчанию True): клавиши удерживаются до смены действия — непрерывное движение, без дёрганых микронажатий. В `EnvConfig(hold_keys=False)` можно вернуть импульсный режим (press с hold_ms).
 
 ---
 
@@ -66,9 +72,16 @@
 ## Запись демо под цель «найти выход»
 
 - При записи демонстраций полезно **приоритизировать**: движение по уровню, подбор призов (свечки, сердечки), поиск ключа и выхода. Врагов бить по необходимости, а не стоять на месте и долго добивать. Тогда BC с `--move-weight` лучше научит политику «идти дальше», а не застревать в бою.
+- **BC не «понимает» цель** — он только имитирует. «Искать выход» как цель требует либо **много демо**, где вы после ключа целенаправленно идёте к двери и выходите, либо **RL** с наградой за выход. В `test_policy` при наличии ключа включается усиленная помощь при переходах (`transition-assist` агрессивнее).
+
+## PPO (Reinforcement Learning)
+
+- **Reward**: HUD подбор (ключи +1.0, оружие +0.3, предметы +0.5), штраф за смерть −1.0, step penalty −0.001.
+- **Env для RL**: `terminated_on_death=True`, `max_episode_steps=N` — env возвращает terminated/truncated.
+- **Инициализация из BC** (`--bc-checkpoint checkpoints/bc/best.pt`) — encoder и actor копируются из BC.
 
 ## Дальнейшие шаги (идеи)
 
-- RL с наградой за прогресс по уровню, подбор предметов, здоровье, выход.
-- Улучшение оценки жизни (калибровка по пикселям или простой классификатор).
-- Опционально: LSTM-политика вместо только frame stacking для длинной памяти.
+- **HUD‑парсер** (`msx_env.hud_parser`): слоты оружия, ключей, предметов. ROIs калибруют при необходимости.
+- Reward за выход с уровня (детекция смены STAGE).
+- Улучшение оценки жизни. LSTM (`--recurrent`) для памяти в лабиринте; проверка: чекпоинт `recurrent: true`, в логе `h_norm`.

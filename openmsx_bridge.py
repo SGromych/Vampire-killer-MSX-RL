@@ -45,6 +45,35 @@ def _posix(p: Path) -> str:
     return str(p.resolve()).replace("\\", "/")
 
 
+def _kill_orphan_openmsx(workdir: Path) -> None:
+    """
+    Убить старый openMSX, запущенный в этом workdir (PID в workdir/openmsx.pid).
+    Нужно перед стартом нового процесса, чтобы не накапливались «забытые» openMSX.
+    """
+    pid_file = Path(workdir) / "openmsx.pid"
+    if not pid_file.exists():
+        return
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/PID", str(pid)],
+            capture_output=True,
+            timeout=5,
+        )
+    else:
+        try:
+            os.kill(pid, 9)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        pid_file.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 class OpenMSXFileControl:
     """
     Windows-stable file-based control for openMSX.
@@ -74,6 +103,8 @@ class OpenMSXFileControl:
         workdir: str = ".",
         poll_ms: int = 20,
         boot_timeout_s: float = 20.0,
+        log_dir: str | Path | None = None,
+        instance_id: int | str | None = None,
     ):
         self.workdir = Path(workdir).resolve()
         self.workdir.mkdir(parents=True, exist_ok=True)
@@ -96,11 +127,22 @@ class OpenMSXFileControl:
         self.commands_tcl.write_text("", encoding="utf-8")
         self.reply_txt.write_text("", encoding="utf-8")
 
-        # log files
-        self.log_out_path = self.workdir / "openmsx_stdout.log"
-        self.log_err_path = self.workdir / "openmsx_stderr.log"
-        self._log_out = open(self.log_out_path, "w", encoding="utf-8", errors="ignore")
-        self._log_err = open(self.log_err_path, "w", encoding="utf-8", errors="ignore")
+        # kill orphan openMSX from previous run (PID in workdir/openmsx.pid)
+        _kill_orphan_openmsx(self.workdir)
+
+        # log files: if log_dir + instance_id given, one file per instance under log_dir; else workdir
+        if log_dir is not None and instance_id is not None:
+            log_dir_path = Path(log_dir).resolve()
+            log_dir_path.mkdir(parents=True, exist_ok=True)
+            self.log_out_path = log_dir_path / f"openmsx_{instance_id}.log"
+            self.log_err_path = self.log_out_path
+            self._log_out = open(self.log_out_path, "w", encoding="utf-8", errors="ignore")
+            self._log_err = self._log_out
+        else:
+            self.log_out_path = self.workdir / "openmsx_stdout.log"
+            self.log_err_path = self.workdir / "openmsx_stderr.log"
+            self._log_out = open(self.log_out_path, "w", encoding="utf-8", errors="ignore")
+            self._log_err = open(self.log_err_path, "w", encoding="utf-8", errors="ignore")
 
         self.proc = subprocess.Popen(
             [OPENMSX_EXE, "-script", str(self.bootstrap_tcl)],
@@ -108,6 +150,7 @@ class OpenMSXFileControl:
             stdout=self._log_out,
             stderr=self._log_err,
         )
+        (self.workdir / "openmsx.pid").write_text(str(self.proc.pid), encoding="utf-8")
 
         self._wait_boot(boot_timeout_s)
 
@@ -186,7 +229,16 @@ if {{[catch {{
 
     def _atomic_write_commands(self, content: str) -> None:
         self.commands_tmp.write_text(content, encoding="utf-8")
-        os.replace(str(self.commands_tmp), str(self.commands_tcl))
+        # На Windows openMSX может держать commands.tcl открытым при опросе — retry при PermissionError
+        for attempt in range(5):
+            try:
+                os.replace(str(self.commands_tmp), str(self.commands_tcl))
+                return
+            except PermissionError:
+                if attempt < 4:
+                    time.sleep(0.05 * (attempt + 1))
+                else:
+                    raise
 
     def _new_rid(self) -> str:
         return uuid.uuid4().hex[:10]
@@ -243,6 +295,11 @@ proc __reply {{msg}} {{
         self._wait_contains("ok:bootstrap", timeout_s)
         self._wait_contains("poll=", timeout_s, file=self.workdir / "bootstrap_status.txt")
         self.ping(timeout_s=2.0)
+        if self.proc.poll() is not None:
+            raise RuntimeError(
+                "openMSX process exited during boot (code=%s). workdir=%s Check log: %s"
+                % (self.proc.returncode, self.workdir, self.log_err_path)
+            )
 
     # -------------------------
     # Public API
@@ -265,7 +322,9 @@ __reply "RID={rid} ok:ping t=[clock milliseconds]"
 screenshot {{{fn}}}
 __reply "RID={rid} ok:screenshot file={fn} t=[clock milliseconds]"
 """)
-        return self._wait_reply_rid(rid, timeout_s)
+        out = self._wait_reply_rid(rid, timeout_s)
+        time.sleep(0.05)
+        return out
 
     def press(self, key: str, hold_ms: int = 120, timeout_s: float = None) -> str:
         """
@@ -371,6 +430,51 @@ __reply "RID={rid} ok:type key={key} t=[clock milliseconds]"
         self._send_tcl_with_replyproc(f"""
 {downs}
 after realtime {hold_sec} "{callback_escaped}"
+""")
+        return self._wait_reply_rid(rid, timeout_s)
+
+    def keydown(self, keys: list[str], timeout_s: float = 2.0) -> str:
+        """
+        Нажать и держать клавиши (без автоотпускания).
+        Для непрерывного движения: keydown при смене действия, keyup при NOOP или смене.
+        """
+        if not keys:
+            return "ok:keydown empty"
+        rows: dict[int, int] = {}
+        for k in keys:
+            k = k.upper().strip()
+            if k not in self._KEYMAP:
+                raise ValueError(
+                    f"Unsupported key '{k}'. Supported: {sorted(self._KEYMAP.keys())}"
+                )
+            r, m = self._KEYMAP[k]
+            rows[r] = rows.get(r, 0) | m
+        rid = self._new_rid()
+        downs = "\n".join(f"keymatrixdown {r} {m}" for r, m in rows.items())
+        self._send_tcl_with_replyproc(f"""
+{downs}
+__reply "RID={rid} ok:keydown t=[clock milliseconds]"
+""")
+        return self._wait_reply_rid(rid, timeout_s)
+
+    def keyup(self, keys: list[str], timeout_s: float = 2.0) -> str:
+        """Отпустить клавиши."""
+        if not keys:
+            return "ok:keyup empty"
+        rows: dict[int, int] = {}
+        for k in keys:
+            k = k.upper().strip()
+            if k not in self._KEYMAP:
+                raise ValueError(
+                    f"Unsupported key '{k}'. Supported: {sorted(self._KEYMAP.keys())}"
+                )
+            r, m = self._KEYMAP[k]
+            rows[r] = rows.get(r, 0) | m
+        rid = self._new_rid()
+        ups = "; ".join(f"catch {{ keymatrixup {r} {m} }}" for r, m in rows.items())
+        self._send_tcl_with_replyproc(f"""
+{ups}
+__reply "RID={rid} ok:keyup t=[clock milliseconds]"
 """)
         return self._wait_reply_rid(rid, timeout_s)
 

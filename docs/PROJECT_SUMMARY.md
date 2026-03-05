@@ -11,8 +11,8 @@
 **Стек:** Python, PyTorch, Gym-подобное окружение `msx_env.env.VampireKillerEnv`, модульная система наград `msx_env/reward/`, BC → PPO, опционально recurrent (LSTM), multi-env.
 
 **Ключевые точки входа:**
-- Обучение PPO: `train_ppo.py` (конфиг `configs/night_training.json`, флаги: `--resume`, `--num-envs`, `--run-name`, `--config`, `--reward-config`).
-- Ночной запуск: `train_supervisor.py` читает `configs/night_training.json`, запускает `train_ppo.py` с `--resume`, рестартует при падении, при `use_runs_dir: true` создаёт `runs/<YYYYMMDD>_<HHMMSS>_<git>_<run_name>/`.
+- Обучение PPO: `train_ppo.py` (конфиг `configs/night_training.json`, флаги: `--resume`, `--num-envs`, `--run-name`, `--config`, `--reward-config`). При первом запуске супервизор передаёт флаги из JSON (в т.ч. `--reward-config configs/reward_v3.json`); при рестарте — `--config run_dir/config_snapshot.json --resume`.
+- Ночной запуск: `train_supervisor.py` читает `configs/night_training.json`, запускает `train_ppo.py`, рестартует при падении, при `use_runs_dir: true` создаёт `runs/<YYYYMMDD>_<HHMMSS>_<git>_<run_name>/`.
 - Тест политики: `test_ppo.py --checkpoint checkpoints/ppo/last.pt`; диагностика: `test_ppo.py --diagnose-policy`.
 - Документация: `docs/PROJECT_OVERVIEW.md` (обзор), `docs/TRAINING.md` (обучение, метрики, guardrails), `docs/SESSION.md` (пути, как запускать, где искать run), `docs/REWARD.md`, `docs/MODULES_AND_FLAGS.md`.
 
@@ -24,9 +24,11 @@
 
 **Ключевые метрики в CSV:** `update`, `steps_per_sec`, `reward_mean`, `ep_return_mean`, `unique_rooms_mean`/`unique_rooms_max`, `entropy`, `policy_loss`, `value_loss`, `deaths`, `stuck_events`. Полный список — `docs/TRAINING.md` и `docs/EPISODE_METRICS_FIX.md`.
 
-**Конфиг ночного запуска:** `configs/night_training.json` (`num_envs`, `max_updates`, `run_name`, `checkpoint_dir`, `use_runs_dir`, `novelty_reward`, `recurrent` и т.д.). Префлайт перед ночью: `python train_supervisor.py --preflight`.
+**Конфиг ночного запуска:** `configs/night_training.json` (`num_envs`, `max_updates`, `run_name`, `checkpoint_dir`, `use_runs_dir`, `novelty_reward`, `recurrent`, **`reward_config`** и т.д.). Ночные прогоны по умолчанию используют **reward v3**: `reward_config: "configs/reward_v3.json"`. Префлайт перед ночью: `python train_supervisor.py --preflight`.
 
-**Состояние кода:** документация актуализирована (пути run dir, метрики, варианты имён metrics.csv/metrics1.csv). Linter по основным файлам (train_ppo.py, train_supervisor.py, msx_env) — без ошибок.
+**Единый конфиг:** `project_config.load_config()` — один источник правды; в run dir пишутся `config_snapshot.json`, `resolved_paths.json`, в логах — `code_version` (git short hash). Проверка, какой код отработал: смотреть в `train.log` строку `code_version=...`.
+
+**Состояние кода:** документация актуализирована; reward v3 включён в night_training; центральный конфиг и RunLayout используются. Linter по основным файлам — без ошибок.
 
 ---
 

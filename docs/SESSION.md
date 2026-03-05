@@ -29,7 +29,8 @@
 | Запись демо | `demos/record_demo.py` → `demos/runs/<run_id>/` |
 | Обучение BC | `train_bc.py` → `checkpoints/bc/` |
 | Обучение PPO | `train_ppo.py` → `checkpoints/ppo/` |
-| Ночной запуск | `train_supervisor.py` + `configs/night_training.json` |
+| Ночной запуск | `train_supervisor.py` + `configs/night_training.json` (в т.ч. `reward_config`: **v3** — `configs/reward_v3.json`) |
+| Единый конфиг, пути, снимки | `project_config.py`, `docs/CONFIG_SYSTEM.md` |
 | Тест BC | `test_policy.py` |
 | Тест PPO | `test_ppo.py` (в т.ч. `--diagnose-policy`) |
 | Env + конфиг | `msx_env/env.py` (EnvConfig, VampireKillerEnv) |
@@ -70,6 +71,12 @@
 - **Эксперименты:** добавлены `--run-name`, `--log-dir`, `--config` (JSON), `--reward-config` (JSON), `--entropy-coef`, `--value-loss-coef`. Логирование: steps/sec, sample throughput, policy/value loss, entropy, approx_kl, explained_var, reward components, unique_rooms, deaths, stuck. Снимок конфига в `<log-dir>/<run_name>/config_snapshot.json`, метрики в `metrics.csv`.
 - **Guardrails:** предупреждения при NaN в loss, низкой энтропии (коллапс политики), расходимости критика (value_loss > 5 или explained_var < −0.5), отсутствии роста unique_rooms за N обновлений.
 - **Документация:** создан `docs/TRAINING.md` (архитектура, аудит, рекомендации по стабильности, система экспериментов, отладка). Конфиг наград: `RewardConfig.from_dict()` в `msx_env/reward/config.py`.
+
+### 3.5. Единый конфиг и reward v3 в ночных прогонах
+
+- **Центральный конфиг:** `project_config.load_config()` / `build_resolved_config_from_args()` — один парсер, разрешение путей, запись `config_snapshot.json` и `resolved_paths.json` в run dir. Супервизор при первом запуске передаёт флаги из `night_training.json` (в т.ч. `--reward-config`); при рестарте — только `--config run_dir/config_snapshot.json --resume`.
+- **Reward v3 по умолчанию:** в `configs/night_training.json` задано `"reward_config": "configs/reward_v3.json"`; супервизор передаёт это в тренер. В v3: key_reward, door_reward, прогрессивный stuck, улучшенная novelty.
+- **Проверка кода в прогоне:** в `train.log` в начале каждого запуска пишется `code_version=<git short hash>`; в снимке — поле `code_version`.
 
 ---
 

@@ -14,6 +14,13 @@
 
 Изменить политику: создать свой `RewardConfig` (или подкласс), подставить нужные веса/пороги и передать в `EnvConfig.reward_config`. При `reward_config=None` используется **legacy**-режим (только HUD pickup + death в env; step_penalty добавляется в `train_ppo.py`).
 
+### Как подключить reward v3
+
+- **Вручную (train_ppo):**  
+  `python train_ppo.py --reward-config configs/reward_v3.json ...`  
+  Готовый пресет v3: **`configs/reward_v3.json`** (key_reward=0.3, door_reward=0.5, novelty_stability_frames=3, прогрессивный stuck и др.).
+- **Ночной супервизор:** в `configs/night_training.json` добавь поле `"reward_config": "configs/reward_v3.json"` — супервизор передаст `--reward-config` при первом запуске (при рестартах используется снимок из run dir).
+
 ---
 
 ## Компоненты

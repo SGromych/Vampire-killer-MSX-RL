@@ -96,7 +96,7 @@ def build_argv(cfg: dict, *, with_resume: bool = True, run_dir_override: Path | 
         if with_resume:
             argv.append("--resume")
         return argv
-    # Legacy: reconstruct flags (used on first start when snapshot not yet written)
+    # Legacy: first start of this run_dir (snapshot not yet written) — do NOT pass --resume, checkpoint doesn't exist
     argv = [
         sys.executable,
         str(ROOT / "train_ppo.py"),
@@ -106,7 +106,8 @@ def build_argv(cfg: dict, *, with_resume: bool = True, run_dir_override: Path | 
         "--checkpoint-dir", cfg["checkpoint_dir"],
         "--entropy-floor", str(cfg["entropy_floor"]),
     ]
-    if with_resume:
+    # --resume only when we have a snapshot (restart); first run has no checkpoint yet
+    if with_resume and snapshot and snapshot.exists():
         argv.append("--resume")
     if cfg.get("checkpoint_every", 0) > 0:
         argv.extend(["--checkpoint-every", str(cfg["checkpoint_every"])])
@@ -122,6 +123,8 @@ def build_argv(cfg: dict, *, with_resume: bool = True, run_dir_override: Path | 
         argv.append("--use-runs-dir")
     if cfg.get("num_envs", 1) > 1:
         argv.append("--no-reset-handshake")
+    if cfg.get("reward_config"):
+        argv.extend(["--reward-config", str(cfg["reward_config"])])
     return argv
 
 

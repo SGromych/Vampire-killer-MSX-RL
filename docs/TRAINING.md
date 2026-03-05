@@ -97,14 +97,17 @@
 
 ### 4.3. Имя запуска и каталог логов
 
-- `--run-name exp_X` — имя эксперимента; логи и снимок конфига пишутся в `<log-dir>/<run_name>/`.
-- `--log-dir` — каталог логов (по умолчанию совпадает с `--checkpoint-dir`).
+- `--run-name exp_X` — имя эксперимента; логи и снимок конфига пишутся в run directory (см. ниже).
+- **Run directory:** при запуске через супервизор с `use_runs_dir: true` — `runs/<YYYYMMDD>_<HHMMSS>_<git>_<run_name>/`; иначе `<log-dir>/<run_name>/` (по умолчанию `<checkpoint-dir>/<run_name>/`).
+- `--log-dir` — каталог логов при отсутствии `--run-dir` (по умолчанию совпадает с `--checkpoint-dir`).
 
 ### 4.4. Логируемые метрики
 
 - **Через консоль (каждые 5 обновлений и последнее):** steps_per_sec, sample_throughput, policy_loss, value_loss, entropy, approx_kl, explained_var, reward_mean, ep_return_mean, unique_rooms_mean, deaths, stuck_events.
-- **В CSV** (`<log-dir>/<run_name>/metrics.csv`): те же величины плюс разбивка наград по компонентам (step, pickup, death, novelty, pingpong, stuck).
-- **Снимок конфига:** `<log-dir>/<run_name>/config_snapshot.json` — run_name, гиперпараметры PPO и полный reward_config на момент старта.
+- **В CSV** (`<run-dir>/metrics.csv`): те же величины плюс разбивка наград по компонентам (step, pickup, death, novelty, pingpong, stuck) и расширенные эпизодные метрики с суффиксом `_ep`
+  (см. **`docs/EPISODE_METRICS_FIX.md`** для формального списка и семантики). В некоторых run'ах файл может называться `metrics1.csv` — при поиске «сегодняшнего» прогона проверяйте оба варианта.
+- **Снимок конфига:** `<run-dir>/config_snapshot.json` — run_name, гиперпараметры PPO и полный reward_config на момент старта.
+- **Run directory:** при `use_runs_dir: true` в `configs/night_training.json` каталог имеет вид `runs/<YYYYMMDD>_<HHMMSS>_<git>_<run_name>/`; актуальный ночной прогон — папка с самой свежей датой/временем изменения файлов (см. **`docs/PROJECT_OVERVIEW.md`** § Run directory).
 
 ### 4.5. Примеры команд
 

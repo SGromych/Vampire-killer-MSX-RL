@@ -44,8 +44,10 @@ python train_ppo.py --run-name bench_lstm --epochs 10 --num-envs 2 --recurrent -
 
 ## CLI (recurrent)
 
-| Флаг | По умолчанию | Описание |
-|------|--------------|----------|
-| `--recurrent` | False | Включить LSTM после encoder. |
-| `--lstm-hidden-size` | 256 | Размер скрытого состояния LSTM. |
-| `--sequence-length` | 0 | Зарезервировано для диагностики/усечённого BPTT (пока не используется). |
+Подробное описание флагов recurrent‑режима и их влияния:
+
+- архитектура и поведение LSTM: см. **`docs/PPO_MODEL.md`**, раздел «LSTM (память, --recurrent)»;
+- все CLI‑флаги `train_ppo.py` (включая `--recurrent`, `--lstm-hidden-size`, `--sequence-length`):
+  см. **`docs/MODULES_AND_FLAGS.md`**, раздел «Обучение PPO (train_ppo.py)».
+
+Здесь эти флаги упоминаются только в контексте бенчмарка и не дублируют полную справку.

@@ -24,6 +24,7 @@ from msx_env.reward.components import (
 )
 from msx_env.reward.config import RewardConfig
 from msx_env.reward.diagnostics import EpisodeDiagnostics, update_diagnostics
+from msx_env.reward.episode_metrics import EpisodeRoomTracker, update_episode_room_metrics
 from msx_env.reward.event_detectors import KeyDetector, DoorDetector
 
 
@@ -47,6 +48,7 @@ class RewardPolicyState:
     stage_candidate: int = 0
     stage_candidate_frames: int = 0
     diagnostics: EpisodeDiagnostics = field(default_factory=EpisodeDiagnostics)
+    episode_room_tracker: EpisodeRoomTracker = field(default_factory=EpisodeRoomTracker)
 
 
 class RewardPolicy:
@@ -233,6 +235,28 @@ class RewardPolicy:
             door_detected=door_detected,
         )
         for k, v in diag_extra.items():
+            extra[k] = v
+
+        # Episode metrics (episode-metrics-fix, fix-room-metrics-stability): stable_room_id, unique_rooms_ep, stage00_exit_ep, backtrack_rate_ep
+        room_debounce_k = getattr(cfg, "episode_room_debounce_k", 7)
+        stage_stable_k = getattr(cfg, "episode_stage_stable_frames", 5)
+        crop_top_ep = getattr(cfg, "episode_playfield_crop_top", 20)
+        crop_bottom_ep = getattr(cfg, "episode_playfield_crop_bottom", 4)
+        crop_right_ep = getattr(cfg, "episode_playfield_crop_right", 36)
+        ep_extra = update_episode_room_metrics(
+            state.episode_room_tracker,
+            obs=obs,
+            stage=stage_int,
+            stage_conf=stage_conf_hud,
+            step=step,
+            room_debounce_k=room_debounce_k,
+            stage_stable_frames=stage_stable_k,
+            crop_top=crop_top_ep,
+            crop_bottom=crop_bottom_ep,
+            crop_right=crop_right_ep,
+            sanity_unique_rooms_warn_threshold=getattr(cfg, "episode_unique_rooms_sanity_warn", 20),
+        )
+        for k, v in ep_extra.items():
             extra[k] = v
 
         # 9) Backtrack penalty (optional, no cheating)

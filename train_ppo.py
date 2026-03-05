@@ -35,6 +35,15 @@ from msx_env.ppo_model import ActorCritic, FRAME_STACK, init_from_bc
 from msx_env.reward import default_v1_config
 from msx_env.reward.config import RewardConfig
 
+try:
+    from project_config import (
+        build_resolved_config_from_args,
+        load_config,
+    )
+    _has_project_config = True
+except ImportError:
+    _has_project_config = False
+
 
 def build_stacked_obs_single(buffer: deque, stack_size: int) -> np.ndarray:
     """Из буфера кадров собрать стопку (stack_size, H, W)."""
@@ -88,6 +97,10 @@ def _supervisor_columns() -> tuple[str, str, str]:
 
 
 def _write_metrics_header(path: Path, run_id: str = "", hostname: str = "", pid: int = 0) -> None:
+    """
+    Создать заголовок metrics.csv, если файл ещё не существует.
+    Одновременно сохранить явную схему колонок в metrics_schema.json в том же каталоге.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         base = (
@@ -102,14 +115,31 @@ def _write_metrics_header(path: Path, run_id: str = "", hostname: str = "", pid:
             "reward_step,reward_pickup,reward_death,reward_novelty,reward_pingpong,reward_stuck,reward_key,reward_door,reward_backtrack,"
             "reward_stage_step,reward_stage_advance,"
             "recurrent_hidden_norm_mean,recurrent_hidden_norm_std,recurrent_hidden_delta_mean,"
-            "resume_count,last_resume_update"
+            "resume_count,last_resume_update,"
+            "unique_rooms_ep_env0,unique_rooms_ep_env1,unique_rooms_ep_mean,unique_rooms_ep_min,unique_rooms_ep_max,"
+            "room_transitions_ep_env0,room_transitions_ep_env1,room_transitions_ep_mean,"
+            "room_dwell_steps_ep_mean,"
+            "stage00_exit_rate_ep,stage00_time_to_exit_steps_ep_env0,stage00_time_to_exit_steps_ep_env1,"
+            "stage00_time_to_exit_steps_ep_mean,stage00_time_to_exit_steps_ep_min,stage00_time_to_exit_steps_ep_max,"
+            "backtrack_rate_ep_env0,backtrack_rate_ep_env1,backtrack_rate_ep_mean,backtrack_rate_ep_min,backtrack_rate_ep_max,"
+            "stage_stable_env0,stage_stable_env1"
         )
         r, u, c = _supervisor_columns()
         if r != "" or u != "" or c != "":
             base += ",restart_count,uptime_seconds,crash_flag"
         base += ",run_id,hostname,pid,last_checkpoint_path,checkpoint_update"
+        # Записать заголовок CSV
         with open(path, "w", encoding="utf-8") as f:
             f.write(base + "\n")
+        # Записать явную схему колонок для диагностики/префлайта
+        try:
+            schema_path = path.parent / "metrics_schema.json"
+            columns = base.split(",")
+            with open(schema_path, "w", encoding="utf-8") as sf:
+                json.dump({"columns": columns}, sf, indent=2, ensure_ascii=False)
+        except Exception:
+            # Схема полезна, но не критична для работы обучения
+            pass
 
 
 def _append_metrics(
@@ -172,6 +202,28 @@ def _append_metrics(
     recurrent_hidden_delta_mean: float = 0.0,
     resume_count: int = 0,
     last_resume_update: int = 0,
+    unique_rooms_ep_env0: float = 0.0,
+    unique_rooms_ep_env1: float = 0.0,
+    unique_rooms_ep_mean: float = 0.0,
+    unique_rooms_ep_min: int = 0,
+    unique_rooms_ep_max: int = 0,
+    room_transitions_ep_env0: int = 0,
+    room_transitions_ep_env1: int = 0,
+    room_transitions_ep_mean: float = 0.0,
+    room_dwell_steps_ep_mean: float = -1.0,
+    stage00_exit_rate_ep: float = 0.0,
+    stage00_time_to_exit_steps_ep_env0: float = -1.0,
+    stage00_time_to_exit_steps_ep_env1: float = -1.0,
+    stage00_time_to_exit_steps_ep_mean: float = -1.0,
+    stage00_time_to_exit_steps_ep_min: float = -1.0,
+    stage00_time_to_exit_steps_ep_max: float = -1.0,
+    backtrack_rate_ep_env0: float = 0.0,
+    backtrack_rate_ep_env1: float = 0.0,
+    backtrack_rate_ep_mean: float = 0.0,
+    backtrack_rate_ep_min: float = 0.0,
+    backtrack_rate_ep_max: float = 0.0,
+    stage_stable_env0: float = 0.0,
+    stage_stable_env1: float = 0.0,
 ) -> None:
     line = (
         f"{update},{steps_per_sec:.2f},{steps_per_sec_per_env:.2f},{rollout_fps:.1f},{sample_throughput:.0f},"
@@ -192,7 +244,15 @@ def _append_metrics(
         f"{components_avg.get('key', 0):.4f},{components_avg.get('door', 0):.4f},{components_avg.get('backtrack', 0):.4f},"
         f"{components_avg.get('stage_step', 0):.4f},{components_avg.get('stage_advance', 0):.4f},"
         f"{recurrent_hidden_norm_mean:.4f},{recurrent_hidden_norm_std:.4f},{recurrent_hidden_delta_mean:.4f},"
-        f"{resume_count},{last_resume_update}"
+        f"{resume_count},{last_resume_update},"
+        f"{unique_rooms_ep_env0:.1f},{unique_rooms_ep_env1:.1f},{unique_rooms_ep_mean:.2f},{unique_rooms_ep_min},{unique_rooms_ep_max},"
+        f"{room_transitions_ep_env0},{room_transitions_ep_env1},{room_transitions_ep_mean:.1f},"
+        f"{room_dwell_steps_ep_mean:.1f},"
+        f"{stage00_exit_rate_ep:.2f},{stage00_time_to_exit_steps_ep_env0:.1f},{stage00_time_to_exit_steps_ep_env1:.1f},"
+        f"{stage00_time_to_exit_steps_ep_mean:.1f},{stage00_time_to_exit_steps_ep_min:.1f},{stage00_time_to_exit_steps_ep_max:.1f},"
+        f"{backtrack_rate_ep_env0:.4f},{backtrack_rate_ep_env1:.4f},{backtrack_rate_ep_mean:.4f},"
+        f"{backtrack_rate_ep_min:.4f},{backtrack_rate_ep_max:.4f},"
+        f"{stage_stable_env0:.1f},{stage_stable_env1:.1f}"
     )
     r, u, c = _supervisor_columns()
     if r != "" or u != "" or c != "":
@@ -204,6 +264,40 @@ def _append_metrics(
         f.flush()
 
 
+def _arch_signature(model: nn.Module, stack_size: int, arch: str) -> dict:
+    """Signature for resume validation: arch, frame_stack, recurrent, lstm_hidden_size, hidden, num_actions, obs_shape."""
+    return {
+        "arch": arch,
+        "frame_stack": stack_size,
+        "recurrent": getattr(model, "recurrent", False),
+        "lstm_hidden_size": getattr(model, "_lstm_hidden_size", 256),
+        "hidden": 512,
+        "num_actions": NUM_ACTIONS,
+        "obs_shape": (stack_size, 84, 84),
+    }
+
+
+def _validate_resume_signature(ckpt: dict, expected: dict) -> None:
+    """Raise ValueError with diff if checkpoint signature does not match expected (no silent load)."""
+    sig = ckpt.get("arch_signature") or {}
+    got = {
+        "arch": sig.get("arch", ckpt.get("arch", "?")),
+        "frame_stack": sig.get("frame_stack", ckpt.get("frame_stack", "?")),
+        "recurrent": sig.get("recurrent", ckpt.get("recurrent", False)),
+        "lstm_hidden_size": sig.get("lstm_hidden_size", ckpt.get("lstm_hidden_size", "?")),
+    }
+    diff = []
+    for k in ("arch", "frame_stack", "recurrent", "lstm_hidden_size"):
+        e = expected.get(k)
+        g = got.get(k, "?")
+        if e is not None and g != e:
+            diff.append(f"  {k}: checkpoint={g!r} vs expected={e!r}")
+    if diff:
+        raise ValueError(
+            "Resume architecture mismatch (fix config or use a compatible checkpoint):\n" + "\n".join(diff)
+        )
+
+
 def _save_checkpoint(
     ckpt_dir: Path,
     model: nn.Module,
@@ -212,7 +306,7 @@ def _save_checkpoint(
     stack_size: int,
     arch: str,
 ) -> None:
-    """Сохранить last.pt с state_dict, optimizer, update, RNG. При recurrent — сохранить флаги для загрузки."""
+    """Сохранить last.pt с state_dict, optimizer, update, RNG, arch_signature. При recurrent — сохранить флаги."""
     rng = {
         "torch": torch.get_rng_state(),
         "numpy": np.random.get_state(),
@@ -225,6 +319,7 @@ def _save_checkpoint(
         "update": update,
         "optimizer_state": opt.state_dict(),
         "rng_state": rng,
+        "arch_signature": _arch_signature(model, stack_size, arch),
     }
     if getattr(model, "recurrent", False):
         ckpt["recurrent"] = True
@@ -251,11 +346,77 @@ def _rotate_backups(ckpt_dir: Path, model: nn.Module, opt: torch.optim.Optimizer
             "numpy": np.random.get_state(),
             "python": random.getstate(),
         },
+        "arch_signature": _arch_signature(model, stack_size, arch),
     }
     if getattr(model, "recurrent", False):
         ckpt["recurrent"] = True
         ckpt["lstm_hidden_size"] = getattr(model, "_lstm_hidden_size", 256)
     torch.save(ckpt, ckpt_dir / backup_names[0])
+
+
+def _args_from_config(config: "ResolvedConfig") -> argparse.Namespace:
+    """Build an args-like namespace from ResolvedConfig so rest of main() can use args.xxx."""
+    from types import SimpleNamespace
+    ppo = config.ppo
+    env = config.env_schema
+    args = SimpleNamespace(
+        checkpoint_dir=str(ppo.checkpoint_dir),
+        bc_checkpoint=str(ppo.bc_checkpoint) if ppo.bc_checkpoint else None,
+        epochs=ppo.epochs,
+        rollout_steps=ppo.rollout_steps,
+        ppo_epochs=ppo.ppo_epochs,
+        batch_size=ppo.batch_size,
+        lr=ppo.lr,
+        gamma=ppo.gamma,
+        gae_lambda=ppo.gae_lambda,
+        clip_eps=ppo.clip_eps,
+        max_episode_steps=ppo.max_episode_steps,
+        step_penalty=ppo.step_penalty,
+        device=config.run.device,
+        arch=ppo.arch,
+        action_repeat=env.action_repeat,
+        decision_fps=env.decision_fps,
+        capture_backend=env.capture_backend,
+        num_envs=env.num_envs,
+        tmp_root=env.tmp_root,
+        post_action_delay_ms=env.post_action_delay_ms,
+        run_name=config.run.experiment_name,
+        log_dir=None,
+        use_runs_dir=config.run.use_runs_dir,
+        run_dir=str(config.run.run_dir),
+        config=None,
+        reward_config=str(config.reward_config_path) if config.reward_config_path else None,
+        novelty_reward=None,
+        entropy_coef=ppo.entropy_coef,
+        value_loss_coef=ppo.value_loss_coef,
+        entropy_floor=ppo.entropy_floor,
+        stuck_updates=ppo.stuck_updates,
+        resume=ppo.resume,
+        checkpoint_every=ppo.checkpoint_every,
+        recurrent=ppo.recurrent,
+        lstm_hidden_size=ppo.lstm_hidden_size,
+        sequence_length=ppo.sequence_length,
+        dry_run_seconds=ppo.dry_run_seconds,
+        no_quiet=not env.quiet,
+        summary_every=ppo.summary_every,
+        summary_interval_sec=ppo.summary_interval_sec,
+        debug=env.debug,
+        debug_room_change=env.debug_room_change,
+        debug_every=env.debug_every,
+        debug_episode_max_steps=env.debug_episode_max_steps,
+        debug_dump_frames=env.debug_dump_frames,
+        debug_force_action=env.debug_force_action,
+        ignore_death=env.ignore_death,
+        window_title_pattern=env.window_title,
+        window_rects_json=str(env.window_rects_path) if env.window_rects_path else None,
+        no_reset_handshake=ppo.no_reset_handshake,
+        nudge_right_steps=ppo.nudge_right_steps,
+        stuck_nudge_steps=ppo.stuck_nudge_steps,
+        dump_hud_every_n_steps=env.dump_hud_every_n_steps,
+        perf=env.perf_profile,
+        export_metrics=str(ppo.export_metrics) if ppo.export_metrics else None,
+    )
+    return args
 
 
 def parse_args() -> argparse.Namespace:
@@ -318,6 +479,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-reset-handshake", action="store_true", help="при num_envs>1 не включать reset handshake (для отладки, если кнопки в env 1 не работают)")
     p.add_argument("--nudge-right-steps", type=int, default=0, help="в начале каждого эпизода N шагов RIGHT (подталкивание вправо, чтобы не застревать на первом экране)")
     p.add_argument("--stuck-nudge-steps", type=int, default=20, help="при застревании (stuck) N шагов по очереди RIGHT/LEFT/UP/DOWN для попытки выхода")
+    p.add_argument("--dump-hud-every-n-steps", type=int, default=0, help="fix-room-metrics: сохранять HUD crop каждые N шагов в run_dir/debug/ (0=выкл, напр. 300)")
+    p.add_argument("--perf", action="store_true", help="throughput diagnostics: собирать t_action/t_capture/t_reward (p50/p95) в info")
     return p.parse_args()
 
 
@@ -336,12 +499,14 @@ def _stage_mean_from_episode_stats(
 
 
 def _load_reward_config(path: str | None) -> RewardConfig:
-    """Загрузить RewardConfig из JSON или вернуть default v1."""
+    """Загрузить RewardConfig из JSON или вернуть default v1. Если path задан и файла нет — fail (no silent default)."""
     if not path:
         return default_v1_config()
-    p = ROOT / path
+    p = ROOT / path if not Path(path).is_absolute() else Path(path)
     if not p.exists():
-        return default_v1_config()
+        raise FileNotFoundError(
+            f"Reward config explicitly specified but file not found: {p}. Fix --reward-config or omit to use default."
+        )
     with open(p, encoding="utf-8") as f:
         return RewardConfig.from_dict(json.load(f))
 
@@ -436,18 +601,33 @@ def _print_training_summary(
 
 
 def main() -> None:
-    args = parse_args()
-    # Применить конфиг эксперимента из JSON (CLI переопределяет)
-    if getattr(args, "config", None):
-        try:
-            config_path = (ROOT / args.config).resolve() if not Path(args.config).is_absolute() else Path(args.config)
-            with open(config_path, encoding="utf-8") as f:
-                cfg = json.load(f)
-            for key, value in cfg.items():
-                if hasattr(args, key):
-                    setattr(args, key, value)
-        except Exception as e:
-            print(f"[warn] Не удалось загрузить --config: {e}")
+    config = None
+    if _has_project_config and "--config" in sys.argv:
+        config = load_config(sys.argv[1:])
+        args = _args_from_config(config)
+        logging.getLogger(__name__).info("Using config: %s", config.layout.config_snapshot())
+        logging.getLogger(__name__).info("Resolved run_dir: %s", config.run.run_dir)
+        logging.getLogger(__name__).info(
+            "Reward version: %s  key_reward=%s  door_reward=%s  stage_reward=%s",
+            getattr(config.reward_config, "version", "v1"),
+            getattr(config.reward_config, "key_reward", 0),
+            getattr(config.reward_config, "door_reward", 0),
+            getattr(config.reward_config, "enable_stage_reward", False),
+        )
+        logging.getLogger(__name__).info("Capture backend: %s", config.env_schema.capture_backend)
+    else:
+        args = parse_args()
+        if _has_project_config:
+            config = build_resolved_config_from_args(args, ROOT)
+            logging.getLogger(__name__).info("Resolved run_dir: %s", config.run.run_dir)
+            logging.getLogger(__name__).info(
+                "Reward version: %s  key_reward=%s  door_reward=%s  stage_reward=%s",
+                getattr(config.reward_config, "version", "v1"),
+                getattr(config.reward_config, "key_reward", 0),
+                getattr(config.reward_config, "door_reward", 0),
+                getattr(config.reward_config, "enable_stage_reward", False),
+            )
+            logging.getLogger(__name__).info("Capture backend: %s", config.env_schema.capture_backend)
 
     device = torch.device(args.device)
     rom = ROOT / "VAMPIRE.ROM"
@@ -465,32 +645,42 @@ def main() -> None:
     elif post_delay is None:
         post_delay = 0.0
 
-    reward_config = _load_reward_config(getattr(args, "reward_config", None))
-    if getattr(args, "novelty_reward", None) is not None:
-        reward_config.novelty_reward = float(args.novelty_reward)
-    run_name = getattr(args, "run_name", None) or "run"
-
-    if getattr(args, "run_dir", None):
-        run_dir = Path(args.run_dir).resolve()
-        run_dir.mkdir(parents=True, exist_ok=True)
-        _readme = ROOT / "scripts" / "run_readme_template.md"
-        if _readme.exists() and not (run_dir / "README.md").exists():
-            import shutil
-            shutil.copy2(_readme, run_dir / "README.md")
-    elif getattr(args, "use_runs_dir", False):
-        from scripts.run_utils import make_run_dir
-        run_dir = make_run_dir(run_name, runs_base="runs")
-        _readme = ROOT / "scripts" / "run_readme_template.md"
-        if _readme.exists() and not (run_dir / "README.md").exists():
-            import shutil
-            shutil.copy2(_readme, run_dir / "README.md")
+    if config is not None:
+        reward_config = config.reward_config
+        run_dir = config.run.run_dir
+        ckpt_dir = config.ppo.checkpoint_dir
+        metrics_file = config.layout.metrics_csv()
+        log_file = config.layout.train_log()
+        run_name = config.run.experiment_name
     else:
-        log_dir = ROOT / (getattr(args, "log_dir", None) or args.checkpoint_dir)
-        run_dir = log_dir / run_name
-        run_dir.mkdir(parents=True, exist_ok=True)
+        reward_config = _load_reward_config(getattr(args, "reward_config", None))
+        if getattr(args, "novelty_reward", None) is not None:
+            reward_config.novelty_reward = float(args.novelty_reward)
+        run_name = getattr(args, "run_name", None) or "run"
+        if getattr(args, "run_dir", None):
+            run_dir = Path(args.run_dir).resolve()
+            run_dir.mkdir(parents=True, exist_ok=True)
+            _readme = ROOT / "scripts" / "run_readme_template.md"
+            if _readme.exists() and not (run_dir / "README.md").exists():
+                import shutil
+                shutil.copy2(_readme, run_dir / "README.md")
+        elif getattr(args, "use_runs_dir", False):
+            from scripts.run_utils import make_run_dir
+            run_dir = make_run_dir(run_name, runs_base="runs")
+            _readme = ROOT / "scripts" / "run_readme_template.md"
+            if _readme.exists() and not (run_dir / "README.md").exists():
+                import shutil
+                shutil.copy2(_readme, run_dir / "README.md")
+        else:
+            log_dir = ROOT / (getattr(args, "log_dir", None) or args.checkpoint_dir)
+            run_dir = log_dir / run_name
+            run_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_dir = ROOT / args.checkpoint_dir if not (getattr(args, "use_runs_dir", False) or getattr(args, "run_dir", None)) else run_dir / "checkpoints" / "ppo"
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        metrics_file = run_dir / "metrics.csv"
+        log_file = run_dir / "train.log"
 
     quiet = not getattr(args, "no_quiet", False)
-    log_file = run_dir / "train.log"
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     log_fp = open(log_file, "a", encoding="utf-8")
@@ -519,6 +709,11 @@ def main() -> None:
         force=True,
     )
     logger = logging.getLogger(__name__)
+    try:
+        from scripts.run_utils import code_version
+        logger.info("code_version=%s (check this in train.log to confirm which commit ran)", code_version())
+    except Exception:
+        logger.info("code_version=unknown")
 
     base_cfg = EnvConfig(
         rom_path=str(rom),
@@ -550,6 +745,19 @@ def main() -> None:
 
     if getattr(args, "ignore_death", False):
         base_cfg.ignore_death = True
+
+    # fix-room-metrics-stability: dump HUD crop для отладки stage detector
+    dump_hud_n = max(0, getattr(args, "dump_hud_every_n_steps", 0))
+    if dump_hud_n > 0:
+        base_cfg = replace(
+            base_cfg,
+            dump_hud_every_n_steps=dump_hud_n,
+            dump_hud_dir=str(run_dir / "debug"),
+        )
+
+    # Throughput diagnostics (diagnose_throughput.py): perf_profile
+    if getattr(args, "perf", False):
+        base_cfg = replace(base_cfg, perf_profile=True)
 
     # Multi-env + window capture: require per-env rects or fallback to file capture
     per_env_window = None
@@ -626,11 +834,12 @@ def main() -> None:
                 arch = ckpt["arch"]
                 logger.info("Архитектура из BC: %s", arch)
 
-    if getattr(args, "use_runs_dir", False) or getattr(args, "run_dir", None):
-        ckpt_dir = run_dir / "checkpoints" / "ppo"
-    else:
-        ckpt_dir = ROOT / args.checkpoint_dir
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    if config is None:
+        if getattr(args, "use_runs_dir", False) or getattr(args, "run_dir", None):
+            ckpt_dir = run_dir / "checkpoints" / "ppo"
+        else:
+            ckpt_dir = ROOT / args.checkpoint_dir
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
     resume_ckpt = None
     use_recurrent = getattr(args, "recurrent", False)
     lstm_hidden_size = getattr(args, "lstm_hidden_size", 256)
@@ -665,6 +874,8 @@ def main() -> None:
     last_resume_update_val = 0
     if resume_ckpt is not None and isinstance(resume_ckpt, dict) and "state_dict" in resume_ckpt:
         try:
+            expected_sig = _arch_signature(model, stack_size, arch)
+            _validate_resume_signature(resume_ckpt, expected_sig)
             model.load_state_dict(resume_ckpt["state_dict"], strict=False)
             if "optimizer_state" in resume_ckpt:
                 try:
@@ -686,35 +897,42 @@ def main() -> None:
         except Exception as e:
             logger.warning("Resume failed: %s, starting from 0", e)
 
-    # Снимок конфига эксперимента для воспроизводимости
-    config_snapshot = {
-        "run_name": run_name,
-        "run_dir": str(run_dir),
-        "checkpoint_dir": str(ckpt_dir),
-        "epochs": args.epochs,
-        "rollout_steps": args.rollout_steps,
-        "ppo_epochs": args.ppo_epochs,
-        "batch_size": args.batch_size,
-        "lr": args.lr,
-        "gamma": args.gamma,
-        "gae_lambda": args.gae_lambda,
-        "clip_eps": args.clip_eps,
-        "entropy_coef": getattr(args, "entropy_coef", 0.01),
-        "value_loss_coef": getattr(args, "value_loss_coef", 0.5),
-        "num_envs": num_envs,
-        "max_episode_steps": args.max_episode_steps,
-        "reward_config": reward_config.to_dict(),
-        "recurrent": use_recurrent,
-        "lstm_hidden_size": lstm_hidden_size,
-        "sequence_length": getattr(args, "sequence_length", 0),
-    }
-    with open(run_dir / "config_snapshot.json", "w", encoding="utf-8") as f:
-        json.dump(config_snapshot, f, indent=2, ensure_ascii=False)
-    print(f"Experiment run_name={run_name} log_dir={run_dir}")
+    # Снимок конфига (уже записан project_config при config is not None)
+    if config is None:
+        config_snapshot = {
+            "run_name": run_name,
+            "run_dir": str(run_dir),
+            "checkpoint_dir": str(ckpt_dir),
+            "epochs": args.epochs,
+            "rollout_steps": args.rollout_steps,
+            "ppo_epochs": args.ppo_epochs,
+            "batch_size": args.batch_size,
+            "lr": args.lr,
+            "gamma": args.gamma,
+            "gae_lambda": args.gae_lambda,
+            "clip_eps": args.clip_eps,
+            "entropy_coef": getattr(args, "entropy_coef", 0.01),
+            "value_loss_coef": getattr(args, "value_loss_coef", 0.5),
+            "num_envs": num_envs,
+            "max_episode_steps": args.max_episode_steps,
+            "reward_config": reward_config.to_dict(),
+            "recurrent": use_recurrent,
+            "lstm_hidden_size": lstm_hidden_size,
+            "sequence_length": getattr(args, "sequence_length", 0),
+        }
+        config_snapshot_path = run_dir / "config_snapshot.json"
+        with open(config_snapshot_path, "w", encoding="utf-8") as f:
+            json.dump(config_snapshot, f, indent=2, ensure_ascii=False)
+        print(f"Experiment run_name={run_name} log_dir={run_dir}")
+        print(f"Config snapshot: {config_snapshot_path}")
+    else:
+        print(f"Experiment run_name={run_name} log_dir={run_dir}")
+        print(f"Config snapshot: {config.layout.config_snapshot()}")
 
     # Метрики за обновление (для guardrails и лога)
     recent_unique_rooms: deque = deque(maxlen=max(1, getattr(args, "stuck_updates", 20)))
-    metrics_file = run_dir / "metrics.csv"
+    if config is None:
+        metrics_file = run_dir / "metrics.csv"
     _run_id, _hostname, _pid = (str(run_dir), "", 0)
     try:
         from scripts.run_utils import run_metadata
@@ -722,6 +940,9 @@ def main() -> None:
     except Exception:
         pass
     _write_metrics_header(metrics_file, run_id=_run_id, hostname=_hostname, pid=_pid)
+    schema_path = metrics_file.parent / "metrics_schema.json"
+    if schema_path.exists():
+        print(f"Metrics schema: {schema_path}")
 
     checkpoint_every = max(0, getattr(args, "checkpoint_every", 0))
     dry_run_seconds = max(0.0, getattr(args, "dry_run_seconds", 0))
@@ -856,6 +1077,14 @@ def main() -> None:
                     room_dwell = float(info.get("reward_room_dwell_steps", -1.0))
                     door_enc = int(info.get("reward_door_encounter_count", 0))
                     loop_len = int(info.get("reward_loop_len_max", 0))
+                    # episode-metrics-fix: новые эпизодные метрики (debounced)
+                    ur_ep = int(info.get("reward_unique_rooms_ep", 0))
+                    room_trans_ep = int(info.get("reward_room_transitions_ep", 0))
+                    dwell_ep_mean = float(info.get("reward_room_dwell_steps_ep_mean", -1.0))
+                    s00_exit_recorded_ep = int(info.get("reward_stage00_exit_recorded_ep", 0))
+                    s00_exit_steps_ep = int(info.get("reward_stage00_exit_steps_ep", -1))
+                    backtrack_rate_ep = float(info.get("reward_backtrack_rate_ep", 0.0))
+                    stable_stage_ep = int(info.get("reward_stable_stage_ep", 0))
                     episode_stats.append((
                         float(episode_returns[i]),
                         episode_steps_list[i],
@@ -875,6 +1104,13 @@ def main() -> None:
                         room_dwell,
                         door_enc,
                         loop_len,
+                        ur_ep,
+                        room_trans_ep,
+                        dwell_ep_mean,
+                        s00_exit_recorded_ep,
+                        s00_exit_steps_ep,
+                        backtrack_rate_ep,
+                        stable_stage_ep,
                     ))
                     # soft_reset=True: не перезапускаем процесс openMSX, только «продолжить» клавишами
                     obs_list[i], _ = envs[i].reset()
@@ -989,6 +1225,45 @@ def main() -> None:
         loop_len_max_mean = float(np.mean(loop_len_list)) if loop_len_list else 0.0
         s00_exit_steps_list_valid = [e[8] for e in episode_stats if e[8] >= 0]
         stage00_time_to_exit_steps = float(np.mean(s00_exit_steps_list_valid)) if s00_exit_steps_list_valid else -1.0
+
+        # episode-metrics-fix, fix-room-metrics-stability: агрегация эпизодных метрик (indices 18-24)
+        ur_ep_list = [e[18] for e in episode_stats]
+        room_trans_ep_list = [e[19] for e in episode_stats]
+        dwell_ep_list = [e[20] for e in episode_stats if e[20] >= 0]
+        s00_exit_recorded_list = [e[21] for e in episode_stats]
+        s00_exit_steps_ep_list = [e[22] for e in episode_stats if e[22] >= 0]
+        backtrack_rate_ep_list = [e[23] for e in episode_stats]
+        unique_rooms_ep_mean_val = float(np.mean(ur_ep_list)) if ur_ep_list else 0.0
+        unique_rooms_ep_min_val = min(ur_ep_list, default=0)
+        unique_rooms_ep_max_val = max(ur_ep_list, default=0)
+        room_transitions_ep_mean_val = float(np.mean(room_trans_ep_list)) if room_trans_ep_list else 0.0
+        room_dwell_steps_ep_mean_val = float(np.mean(dwell_ep_list)) if dwell_ep_list else -1.0
+        stage00_exit_rate_ep_val = float(np.mean(s00_exit_recorded_list)) if s00_exit_recorded_list else 0.0
+        stage00_time_to_exit_ep_mean_val = float(np.mean(s00_exit_steps_ep_list)) if s00_exit_steps_ep_list else -1.0
+        stage00_time_to_exit_ep_min_val = min(s00_exit_steps_ep_list) if s00_exit_steps_ep_list else -1.0
+        stage00_time_to_exit_ep_max_val = max(s00_exit_steps_ep_list) if s00_exit_steps_ep_list else -1.0
+        backtrack_rate_ep_mean_val = float(np.mean(backtrack_rate_ep_list)) if backtrack_rate_ep_list else 0.0
+        backtrack_rate_ep_min_val = min(backtrack_rate_ep_list, default=0.0)
+        backtrack_rate_ep_max_val = max(backtrack_rate_ep_list, default=0.0)
+        unique_rooms_ep_per_env = [
+            float(np.mean([e[18] for e in episode_stats if e[6] == j])) if [e for e in episode_stats if e[6] == j] else 0.0
+            for j in range(num_envs)
+        ]
+        room_transitions_ep_per_env = [
+            sum(e[19] for e in episode_stats if e[6] == j) for j in range(num_envs)
+        ]
+        stage00_time_to_exit_ep_per_env = []
+        for j in range(num_envs):
+            lst = [e[22] for e in episode_stats if e[6] == j and e[22] >= 0]
+            stage00_time_to_exit_ep_per_env.append(float(np.mean(lst)) if lst else -1.0)
+        backtrack_rate_ep_per_env = [
+            float(np.mean([e[23] for e in episode_stats if e[6] == j])) if [e for e in episode_stats if e[6] == j] else 0.0
+            for j in range(num_envs)
+        ]
+        stable_stage_ep_per_env = [
+            float(np.mean([e[24] for e in episode_stats if e[6] == j])) if [e for e in episode_stats if e[6] == j] else 0.0
+            for j in range(num_envs)
+        ]
 
         deaths = sum(1 for e in episode_stats if e[3])
         stuck_events = sum(1 for e in episode_stats if e[4])
@@ -1208,6 +1483,28 @@ def main() -> None:
             recurrent_hidden_delta_mean=h_delta_mean,
             resume_count=resume_count_val,
             last_resume_update=last_resume_update_val,
+            unique_rooms_ep_env0=unique_rooms_ep_per_env[0] if num_envs >= 1 else 0.0,
+            unique_rooms_ep_env1=unique_rooms_ep_per_env[1] if num_envs >= 2 else 0.0,
+            unique_rooms_ep_mean=unique_rooms_ep_mean_val,
+            unique_rooms_ep_min=unique_rooms_ep_min_val,
+            unique_rooms_ep_max=unique_rooms_ep_max_val,
+            room_transitions_ep_env0=room_transitions_ep_per_env[0] if num_envs >= 1 else 0,
+            room_transitions_ep_env1=room_transitions_ep_per_env[1] if num_envs >= 2 else 0,
+            room_transitions_ep_mean=room_transitions_ep_mean_val,
+            room_dwell_steps_ep_mean=room_dwell_steps_ep_mean_val,
+            stage00_exit_rate_ep=stage00_exit_rate_ep_val,
+            stage00_time_to_exit_steps_ep_env0=stage00_time_to_exit_ep_per_env[0] if num_envs >= 1 else -1.0,
+            stage00_time_to_exit_steps_ep_env1=stage00_time_to_exit_ep_per_env[1] if num_envs >= 2 else -1.0,
+            stage00_time_to_exit_steps_ep_mean=stage00_time_to_exit_ep_mean_val,
+            stage00_time_to_exit_steps_ep_min=stage00_time_to_exit_ep_min_val,
+            stage00_time_to_exit_steps_ep_max=stage00_time_to_exit_ep_max_val,
+            backtrack_rate_ep_env0=backtrack_rate_ep_per_env[0] if num_envs >= 1 else 0.0,
+            backtrack_rate_ep_env1=backtrack_rate_ep_per_env[1] if num_envs >= 2 else 0.0,
+            backtrack_rate_ep_mean=backtrack_rate_ep_mean_val,
+            backtrack_rate_ep_min=backtrack_rate_ep_min_val,
+            backtrack_rate_ep_max=backtrack_rate_ep_max_val,
+            stage_stable_env0=stable_stage_ep_per_env[0] if num_envs >= 1 else 0.0,
+            stage_stable_env1=stable_stage_ep_per_env[1] if num_envs >= 2 else 0.0,
         )
 
         _save_checkpoint(ckpt_dir, model, opt, update + 1, stack_size, args.arch)

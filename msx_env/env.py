@@ -114,6 +114,12 @@ class EnvConfig:
     reset_handshake_stable_frames: int = 0  # 0 = выкл; N = ждать N подряд кадров с stage_conf >= conf_min
     reset_handshake_conf_min: float = 0.5  # минимальная уверенность stage для «стабильного» кадра
     reset_handshake_timeout_s: float = 15.0  # макс. время ожидания стабильного кадра
+    # fix-room-metrics-stability: dump HUD crop для отладки stage detector
+    dump_hud_every_n_steps: int = 0  # 0 = выкл; N = сохранять HUD crop каждые N шагов
+    dump_hud_dir: str | None = None  # каталог для hud_env{X}_step{t}.png; None = не сохранять
+    # Throughput diagnostics (diagnose_throughput.py): включаются только при явном флаге
+    perf_profile: bool = False  # собирать t_action_ms, t_capture_ms, t_preproc_ms, t_reward_ms
+    capture_off: bool = False  # при True: не вызывать grab(), возвращать кэш/zeros (для benchmark capture_on vs off)
 
 
 class VampireKillerEnv:
@@ -160,6 +166,19 @@ class VampireKillerEnv:
         self._debug_steps_since_room: int = 0
         self._debug_dumped_count: int = 0
         self._death_low_life_steps: int = 0  # гистерезис: смерть только после 2 подряд кадров с life < 0.15
+        # perf_profile: diagnose_throughput.py
+        self._perf_acc = None
+        if getattr(cfg, "perf_profile", False):
+            from msx_env.perf_timers import PerfTimerAccumulator
+            self._perf_acc = PerfTimerAccumulator()
+        self._capture_off_cache_rgb: np.ndarray | None = None
+        self._capture_off_cache_obs: np.ndarray | None = None
+
+    def get_perf_stats(self) -> dict | None:
+        """Возвращает агрегированную статистику таймеров (только при perf_profile=True)."""
+        if self._perf_acc is None:
+            return None
+        return self._perf_acc.get_stats()
 
     # --------- низкоуровневые helpers ---------
 
@@ -221,7 +240,21 @@ class VampireKillerEnv:
         """
         Захват через бэкенд: RGB (H,W,3) и obs (84,84) uint8 grayscale.
         Один вызов grab — без двойного чтения PNG.
+        capture_off=True: пропуск grab, возврат кэша или zeros.
         """
+        capture_off = getattr(self.cfg, "capture_off", False)
+        if capture_off:
+            if self._capture_off_cache_rgb is not None:
+                return self._capture_off_cache_rgb.copy(), self._capture_off_cache_obs.copy()
+            # первый раз: минимальный placeholder (256x192 типичный MSX)
+            h, w = 192, 256
+            rgb = np.zeros((h, w, 3), dtype=np.uint8)
+            img = Image.fromarray(rgb).resize(self.cfg.frame_size).convert("L")
+            obs = np.array(img, dtype=np.uint8)
+            self._capture_off_cache_rgb = rgb
+            self._capture_off_cache_obs = obs
+            return rgb.copy(), obs.copy()
+
         capture = self._ensure_capture()
         t0 = time.perf_counter()
         rgb = capture.grab()
@@ -364,6 +397,9 @@ class VampireKillerEnv:
     def step(self, action: int):
         """Применить действие (keydown/keyup), опционально post_action_delay_ms, захват кадра, награда, done."""
         t_step_start = time.perf_counter()
+        perf = self._perf_acc is not None
+        env_id = getattr(self.cfg, "instance_id", 0)
+
         force = (getattr(self.cfg, "debug_force_action", "") or "").strip().upper()
         if force:
             action = _debug_force_action_to_id(force, action)
@@ -372,6 +408,7 @@ class VampireKillerEnv:
         decision_fps = getattr(self.cfg, "decision_fps", None)
         step_duration_s = 1.0 / decision_fps if decision_fps and decision_fps > 0 else 0.0
 
+        t_action_start = time.perf_counter() if perf else 0
         if getattr(self.cfg, "debug", False) and self._step_count < 3:
             print_step_control(self, emu)
         self._apply_action(emu, int(action))
@@ -384,8 +421,30 @@ class VampireKillerEnv:
         delay_ms = getattr(self.cfg, "post_action_delay_ms", 0.0)
         if delay_ms > 0:
             time.sleep(delay_ms / 1000.0)
+        if perf:
+            t_action_ms = (time.perf_counter() - t_action_start) * 1000
+            self._perf_acc.record("t_action_send_ms", t_action_ms, env_id)
 
+        t_grab_start = time.perf_counter() if perf else 0
         rgb, obs = self._grab_frame_and_obs()
+        if perf:
+            t_capture_preproc_ms = (time.perf_counter() - t_grab_start) * 1000
+            self._perf_acc.record("t_capture_ms", t_capture_preproc_ms, env_id)
+        # fix-room-metrics-stability: dump HUD crop для отладки stage detector
+        dump_n = getattr(self.cfg, "dump_hud_every_n_steps", 0)
+        dump_dir = getattr(self.cfg, "dump_hud_dir", None)
+        next_step = self._step_count + 1
+        if dump_n > 0 and dump_dir and next_step % dump_n == 0:
+            try:
+                from pathlib import Path
+                d = Path(dump_dir)
+                d.mkdir(parents=True, exist_ok=True)
+                eid = getattr(self.cfg, "instance_id", 0)
+                fn = d / f"hud_env{eid}_step{next_step}.png"
+                hud_crop = rgb[: min(24, rgb.shape[0]), :, :]
+                Image.fromarray(hud_crop).save(fn)
+            except Exception:
+                pass
         reward = 0.0
         info: Dict[str, Any] = {}
         env_id = getattr(self.cfg, "instance_id", None)
@@ -411,6 +470,7 @@ class VampireKillerEnv:
                     self._death_low_life_steps = 0
                 self._life_prev = life
 
+        t_reward_start = time.perf_counter() if perf else 0
         if self._reward_policy is not None:
             total_reward, components, extra = self._reward_policy.compute(
                 self._prev_obs,
@@ -462,6 +522,10 @@ class VampireKillerEnv:
                 info["stage_conf"] = 0.0
             if terminated_by_death:
                 reward = reward - 1.0
+
+        if perf:
+            t_reward_ms = (time.perf_counter() - t_reward_start) * 1000
+            self._perf_acc.record("t_reward_ms", t_reward_ms, env_id)
 
         terminated = terminated_by_death
         if getattr(self.cfg, "ignore_death", False) and terminated_by_death:

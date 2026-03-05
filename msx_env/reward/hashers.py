@@ -1,6 +1,9 @@
 """
 Стабильный хэш комнаты/сцены по кадру. Устойчив к мерцанию (спрайты, мелкие изменения HUD).
 С гистерезисом: новая комната засчитывается только если хэш держится K кадров подряд.
+
+fix-room-metrics-stability: stable_room_hash_playfield — playfield-only hash,
+blur+quantize для устойчивости к спрайтам/анимации.
 """
 from __future__ import annotations
 
@@ -110,3 +113,55 @@ def position_proxy_x(obs: np.ndarray) -> float:
     x_coords = np.arange(w, dtype=np.float64)
     x_center = (column_sums * x_coords).sum() / total
     return float(x_center / max(1, w - 1))
+
+
+# --------- fix-room-metrics-stability: stable hash для эпизодных метрик ---------
+
+def stable_room_hash_playfield(
+    obs: np.ndarray,
+    *,
+    crop_top: int = 20,
+    crop_bottom: int = 4,
+    crop_right: int = 36,
+    downscale_size: tuple[int, int] = (48, 48),
+    blur_radius: int = 2,
+    quantize_levels: int = 16,
+    grid: tuple[int, int] = (4, 4),
+) -> str:
+    """
+    Стабильный хэш playfield для эпизодных метрик (unique_rooms_ep, backtrack_rate_ep).
+    Исключает HUD: верх (SCORE/STAGE/hearts/PLAYER), право (weapon/key/items), низ.
+    Сглаживание и квантизация снижают влияние спрайтов/анимации.
+    Для 84x84: crop_top=20, crop_bottom=4, crop_right=36 → playfield 60x48.
+    """
+    if obs.ndim == 3:
+        obs = np.asarray(obs).mean(axis=-1)
+    h, w = obs.shape[:2]
+    y0 = min(crop_top, h - 1)
+    y1 = max(y0 + 1, h - crop_bottom)
+    x1 = max(1, w - crop_right)
+    playfield = np.asarray(obs[y0:y1, :x1], dtype=np.uint8)
+
+    from PIL import Image
+    from PIL import ImageFilter
+
+    img = Image.fromarray(playfield)
+    img = img.resize((downscale_size[1], downscale_size[0]), Image.Resampling.BILINEAR)
+    if blur_radius > 0:
+        img = img.filter(ImageFilter.BoxBlur(blur_radius))
+    arr = np.array(img, dtype=np.uint8)
+    if quantize_levels > 1:
+        step = 256 // quantize_levels
+        arr = (arr // step) * step
+
+    h2, w2 = arr.shape
+    bh, bw = max(1, h2 // grid[0]), max(1, w2 // grid[1])
+    blocks: list[float] = []
+    for i in range(grid[0]):
+        for j in range(grid[1]):
+            y0b, y1b = i * bh, min((i + 1) * bh, h2)
+            x0b, x1b = j * bw, min((j + 1) * bw, w2)
+            block = arr[y0b:y1b, x0b:x1b]
+            blocks.append(float(np.mean(block)))
+    key = hashlib.sha1(np.array(blocks, dtype=np.float64).tobytes()).hexdigest()
+    return key

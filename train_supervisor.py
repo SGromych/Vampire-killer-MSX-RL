@@ -4,6 +4,7 @@ rollback при NaN, watchdog по таймауту. Читает configs/night_
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -83,7 +84,19 @@ def rollback_to_safe_checkpoint(ckpt_dir: Path) -> bool:
     return False
 
 
-def build_argv(cfg: dict) -> list[str]:
+def build_argv(cfg: dict, *, with_resume: bool = True, run_dir_override: Path | None = None) -> list[str]:
+    # Primary: if run_dir has config_snapshot.json, spawn with --config + --resume only (same config for all restarts)
+    snapshot = (run_dir_override / "config_snapshot.json") if run_dir_override else None
+    if snapshot and snapshot.exists():
+        argv = [
+            sys.executable,
+            str(ROOT / "train_ppo.py"),
+            "--config", str(snapshot.resolve()),
+        ]
+        if with_resume:
+            argv.append("--resume")
+        return argv
+    # Legacy: reconstruct flags (used on first start when snapshot not yet written)
     argv = [
         sys.executable,
         str(ROOT / "train_ppo.py"),
@@ -92,8 +105,9 @@ def build_argv(cfg: dict) -> list[str]:
         "--epochs", str(cfg["max_updates"]),
         "--checkpoint-dir", cfg["checkpoint_dir"],
         "--entropy-floor", str(cfg["entropy_floor"]),
-        "--resume",
     ]
+    if with_resume:
+        argv.append("--resume")
     if cfg.get("checkpoint_every", 0) > 0:
         argv.extend(["--checkpoint-every", str(cfg["checkpoint_every"])])
     if cfg.get("nudge_right_steps", 0) > 0:
@@ -106,7 +120,6 @@ def build_argv(cfg: dict) -> list[str]:
         argv.append("--recurrent")
     if cfg.get("use_runs_dir", False):
         argv.append("--use-runs-dir")
-    # При num_envs>1: --no-reset-handshake иначе кнопки в env 1 могут не работать (при запуске через supervisor)
     if cfg.get("num_envs", 1) > 1:
         argv.append("--no-reset-handshake")
     return argv
@@ -138,8 +151,8 @@ def run_training(
     env["SUPERVISOR_CRASH_FLAG"] = str(crash_flag)
     # SUPERVISOR_UPTIME_SECONDS считается внутри train_ppo от старта процесса
 
-    argv = build_argv(cfg)
-    if run_dir_override is not None:
+    argv = build_argv(cfg, run_dir_override=run_dir_override)
+    if run_dir_override is not None and not (run_dir_override / "config_snapshot.json").exists():
         argv.extend(["--run-dir", str(run_dir)])
     last_metric_mtime[0] = time.time()
     if metrics_path.exists():
@@ -197,7 +210,7 @@ def watchdog_loop(
             stop_event.set()
 
 
-def main() -> None:
+def _supervisor_main() -> None:
     cfg = load_config()
     run_dir_override = None
     if cfg.get("use_runs_dir", False):
@@ -272,6 +285,132 @@ def main() -> None:
         time.sleep(restart_delay)
 
     print("Supervisor finished.")
+
+
+def _print_metrics_tail(metrics_path: Path, lines: int = 3) -> None:
+    if not metrics_path.exists():
+        print(f"[preflight] metrics.csv not found at {metrics_path}")
+        return
+    with open(metrics_path, "r", encoding="utf-8") as f:
+        rows = [l.rstrip("\n") for l in f if l.strip()]
+    if not rows:
+        print("[preflight] metrics.csv is empty")
+        return
+    header = rows[0]
+    tail = rows[1:][-lines:]
+    print("\n[preflight] metrics.csv header:")
+    print(header)
+    print(f"[preflight] last {len(tail)} rows:")
+    for r in tail:
+        print(r)
+
+
+def _preflight() -> None:
+    """60s dry-run с num_envs=1, печать путей и проверки last.pt/metrics."""
+    cfg = load_config().copy()
+    # Для префлайта принудительно без use_runs_dir, чтобы пути были стабильными и совпадали с выводом.
+    cfg["num_envs"] = 1
+    cfg["use_runs_dir"] = False
+    run_dir = run_dir_from_config(cfg)
+    ckpt_dir = ckpt_dir_from_config(cfg)
+    metrics_path = metrics_file_from_config(cfg)
+    last_ckpt = ckpt_dir / "last.pt"
+    last_mtime_before = last_ckpt.stat().st_mtime if last_ckpt.exists() else None
+    print(f"[preflight] run_dir={run_dir}")
+    print(f"[preflight] ckpt_dir={ckpt_dir}")
+    print(f"[preflight] metrics_path={metrics_path}")
+
+    argv = build_argv(cfg)
+    argv.extend(["--dry-run-seconds", "60"])
+    print(f"[preflight] launching: {' '.join(argv)}")
+    subprocess.run(argv, cwd=str(ROOT), check=False)
+
+    if last_ckpt.exists():
+        mtime_after = last_ckpt.stat().st_mtime
+        updated = last_mtime_before is None or mtime_after > last_mtime_before
+        print(f"[preflight] last.pt exists: {last_ckpt}")
+        print(f"[preflight] last.pt updated: {updated}")
+    else:
+        print(f"[preflight] WARNING: last.pt not found in {ckpt_dir}")
+
+    _print_metrics_tail(metrics_path, lines=3)
+
+
+def _resume_smoke_test() -> None:
+    """
+    Двухпроходный тест resume:
+    - первый запуск без --resume c dry-run ~45s,
+    - второй запуск с --resume c dry-run ~45s,
+    - проверка, что номер update продолжает расти.
+    """
+    base_cfg = load_config()
+    cfg = base_cfg.copy()
+    cfg["num_envs"] = 1
+    cfg["use_runs_dir"] = False  # стабилизируем пути для smoke‑теста
+    cfg["run_name"] = f"{base_cfg.get('run_name', 'auto_night')}_resume_smoke"
+    run_dir = run_dir_from_config(cfg)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = metrics_file_from_config(cfg)
+    ckpt_dir = ckpt_dir_from_config(cfg)
+
+    def max_update(path: Path) -> int:
+        if not path.exists():
+            return 0
+        with open(path, "r", encoding="utf-8") as f:
+            rows = [l.strip() for l in f if l.strip()]
+        if len(rows) <= 1:
+            return 0
+        updates: list[int] = []
+        for row in rows[1:]:
+            parts = row.split(",")
+            try:
+                updates.append(int(parts[0]))
+            except Exception:
+                continue
+        return max(updates) if updates else 0
+
+    # Первый запуск: без --resume
+    argv1 = build_argv(cfg, with_resume=False)
+    argv1.extend(["--dry-run-seconds", "45"])
+    print(f"[resume-smoke] first run (no resume): {' '.join(argv1)}")
+    subprocess.run(argv1, cwd=str(ROOT), check=False)
+    u1 = max_update(metrics_path)
+    print(f"[resume-smoke] max update after first run: {u1}")
+
+    # Второй запуск: с --resume
+    argv2 = build_argv(cfg, with_resume=True)
+    argv2.extend(["--dry-run-seconds", "45"])
+    print(f"[resume-smoke] second run (with resume): {' '.join(argv2)}")
+    subprocess.run(argv2, cwd=str(ROOT), check=False)
+    u2 = max_update(metrics_path)
+    print(f"[resume-smoke] max update after second run: {u2}")
+
+    ok = u2 > u1 and u1 > 0
+    report_path = run_dir / "preflight_report.md"
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("## Resume smoke test\n\n")
+        f.write(f"- metrics_path: `{metrics_path}`\n")
+        f.write(f"- checkpoint_dir: `{ckpt_dir}`\n")
+        f.write(f"- max_update_first_run: {u1}\n")
+        f.write(f"- max_update_second_run: {u2}\n")
+        f.write(f"- result: {'OK (updates increased)' if ok else 'FAIL (updates did not increase as expected)'}\n")
+    print(f"[resume-smoke] report written to {report_path}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Night supervisor and preflight for PPO training")
+    parser.add_argument("--preflight", action="store_true", help="run 60s dry-run preflight (no supervision loop)")
+    parser.add_argument("--resume-smoke-test", action="store_true", help="run short two-stage resume smoke test")
+    args = parser.parse_args()
+
+    if args.preflight:
+        _preflight()
+        return
+    if args.resume_smoke_test:
+        _resume_smoke_test()
+        return
+
+    _supervisor_main()
 
 
 if __name__ == "__main__":

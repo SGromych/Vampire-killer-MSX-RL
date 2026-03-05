@@ -1,8 +1,11 @@
 # Архитектура PPO-модели (ActorCritic)
 
-Подробное описание сети PPO: encoder, LSTM (память), головы actor/critic.
+Этот документ является **основным источником правды (single source of truth)** по архитектуре ActorCritic:
+encoder, опциональный LSTM и головы actor/critic.
 
-Модуль: `msx_env/ppo_model.py`. См. также `msx_env/bc_model.py` (encoder), `docs/PPO_RECURRENT_AUDIT.md` (LSTM), `docs/PPO_RECURRENT_BENCHMARK.md` (сравнение).
+Модуль: `msx_env/ppo_model.py`. Дополнительные материалы:
+`msx_env/bc_model.py` (encoder), `docs/PPO_RECURRENT_AUDIT.md` (исторический аудит перед добавлением LSTM),
+`docs/PPO_RECURRENT_BENCHMARK.md` (краткий бенчмарк recurrent‑режима).
 
 ---
 

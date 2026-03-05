@@ -27,6 +27,11 @@ def _git_short() -> str:
     return "nogit"
 
 
+def code_version() -> str:
+    """Версия кода для логов: git short hash или 'nogit'. По ней в train.log можно убедиться, что в прогоне участвует нужный коммит."""
+    return _git_short()
+
+
 def make_run_dir(run_name: str | None = None, runs_base: str | Path = "runs") -> Path:
     """
     Создать runs/<timestamp>_<gitshort>_<runname>/

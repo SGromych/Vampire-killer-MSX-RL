@@ -2,6 +2,8 @@
 
 **Назначение:** контекст для перехода в новый чат. Состояние проекта, недавние правки, где что лежит, как запускать. Для нового чата достаточно открыть этот файл и при необходимости смотреть **`docs/MODULES_AND_FLAGS.md`** и **`docs/CONTEXT.md`**.
 
+**Копировать в другой чат:** готовый блок для вставки — **`docs/PROJECT_SUMMARY.md`** (краткое саммари проекта, пути, метрики, конфиги).
+
 ---
 
 ## 1. Что за проект
@@ -18,6 +20,7 @@
 | Назначение | Путь |
 |------------|------|
 | **Саммари для чата** | **`docs/SESSION.md`** (этот файл) |
+| Обзор проекта, run dir, метрики | `docs/PROJECT_OVERVIEW.md` |
 | Контекст, архитектура | `docs/CONTEXT.md` |
 | Модули, флаги, выходы | `docs/MODULES_AND_FLAGS.md` |
 | **PPO: обучение, аудит, эксперименты** | **`docs/TRAINING.md`** |
@@ -26,13 +29,20 @@
 | Запись демо | `demos/record_demo.py` → `demos/runs/<run_id>/` |
 | Обучение BC | `train_bc.py` → `checkpoints/bc/` |
 | Обучение PPO | `train_ppo.py` → `checkpoints/ppo/` |
+| Ночной запуск | `train_supervisor.py` + `configs/night_training.json` |
 | Тест BC | `test_policy.py` |
-| Тест PPO | `test_ppo.py` |
+| Тест PPO | `test_ppo.py` (в т.ч. `--diagnose-policy`) |
 | Env + конфиг | `msx_env/env.py` (EnvConfig, VampireKillerEnv) |
 | Фабрика env для num_envs | `msx_env/make_env.py` |
-| Парсер HUD (оружие, ключи) | `msx_env/hud_parser.py` |
 | Модели BC/PPO | `msx_env/bc_model.py`, `msx_env/ppo_model.py` |
 | Мост openMSX | `openmsx_bridge.py` |
+
+### Где искать последний ночной run и метрики
+
+- При **`use_runs_dir: true`** в `configs/night_training.json` каждый запуск супервизора создаёт папку  
+  **`runs/<YYYYMMDD>_<HHMMSS>_<git>_<run_name>/`** (например `runs/20260304_181828_58548f2_auto_night/`).
+- **«Сегодняшний» прогон** — папка с самой свежей датой изменения (LastWriteTime); запись может идти до утра следующего дня.
+- Внутри run dir: **`metrics.csv`** или **`metrics1.csv`**, **`train.log`**, **`config_snapshot.json`**, **`supervisor.log`** или **`supervisor1.log`**. При поиске данных проверять оба варианта имён.
 
 ---
 
@@ -78,6 +88,40 @@
 - **Проверка скорости перед ночью (2 мин):**  
   `python train_ppo.py --bc-checkpoint checkpoints/bc/best.pt --num-envs 2 --dry-run-seconds 120`  
   В конце выводится steps/sec, updates/hour и подсказка для max_total_steps за 8 ч. Подробнее: **docs/TRAINING.md** §7.
+
+---
+
+## 4.1. Night run recipe (один env)
+
+Минимальный чек‑лист перед ночным запуском PPO (num_envs=1):
+
+1. **Префлайт:**  
+   ```bash
+   python train_supervisor.py --preflight
+   ```  
+   Убедиться, что:
+   - напечатаны `run_dir`, `ckpt_dir`, `metrics_path`;
+   - `last.pt` существует и помечен как updated;
+   - заголовок `metrics.csv` и последние строки выглядят разумно (нет NaN/inf).
+2. **Smoke‑тест резюме (по желанию):**  
+   ```bash
+   python train_supervisor.py --resume-smoke-test
+   ```  
+   Проверить `preflight_report.md` в соответствующем `run_dir`: `max_update_second_run` должен быть > `max_update_first_run`.
+3. **Ночной запуск (1 env):**  
+   - убедиться, что в `configs/night_training.json` выставлены `num_envs: 1`, `run_name`, `checkpoint_dir`;
+   - запустить:  
+     ```bash
+     python train_supervisor.py
+     ```  
+   - мониторить `supervisor.log` и `train.log` в `run_dir`.
+
+> **Важно про `--deterministic` на ранних чекпоинтах.**  
+> На очень ранних PPO‑чекпоинтах (малый `update`) детерминированный режим (`--deterministic`) может
+> “залипнуть” на одном действии (часто NOOP), поэтому герой выглядит как стоящий на месте, в то время как
+> стохастический режим даёт хоть какое‑то движение. Не интерпретируйте это как баг env/политики —
+> это ожидаемое поведение для почти не обученной модели. Для диагностики коллапса можно использовать
+> `test_ppo.py --diagnose-policy`.
 
 ---
 

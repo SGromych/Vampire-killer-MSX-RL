@@ -72,6 +72,14 @@ class RewardConfig:
     stage_conf_threshold: float = 0.6  # ниже — не применять stage reward (anti-exploit)
     stage_stability_frames: int = 3  # гистерезис: stage должен быть стабилен K кадров
 
+    # fix-room-metrics-stability: эпизодные метрики комнат (stable_room_id, playfield hash)
+    episode_room_debounce_k: int = 7  # K кадров для debounce room_hash (6–8)
+    episode_stage_stable_frames: int = 5  # N кадров для debounce stage
+    episode_playfield_crop_top: int = 20  # playfield: без HUD сверху
+    episode_playfield_crop_bottom: int = 4
+    episode_playfield_crop_right: int = 36  # playfield: без weapon/key/items справа
+    episode_unique_rooms_sanity_warn: int = 20  # WARNING если unique_rooms_ep > N
+
     @classmethod
     def from_dict(cls, d: dict) -> "RewardConfig":
         """Загрузить конфиг из словаря (например из JSON). Неизвестные ключи игнорируются. Обратная совместимость с v1."""
@@ -89,6 +97,9 @@ class RewardConfig:
             "stuck_progressive", "stuck_position_variance_steps", "stuck_position_variance_threshold",
             "enable_stage_reward", "stage_step_penalty", "stage_advance_bonus", "stage_only_for",
             "stage_conf_threshold", "stage_stability_frames",
+            "episode_room_debounce_k", "episode_stage_stable_frames",
+            "episode_playfield_crop_top", "episode_playfield_crop_bottom", "episode_playfield_crop_right",
+            "episode_unique_rooms_sanity_warn",
         }
         return cls(**{k: v for k, v in d.items() if k in known})
 
@@ -133,6 +144,12 @@ class RewardConfig:
             "stage_only_for": self.stage_only_for,
             "stage_conf_threshold": self.stage_conf_threshold,
             "stage_stability_frames": self.stage_stability_frames,
+            "episode_room_debounce_k": self.episode_room_debounce_k,
+            "episode_stage_stable_frames": self.episode_stage_stable_frames,
+            "episode_playfield_crop_top": self.episode_playfield_crop_top,
+            "episode_playfield_crop_bottom": self.episode_playfield_crop_bottom,
+            "episode_playfield_crop_right": self.episode_playfield_crop_right,
+            "episode_unique_rooms_sanity_warn": self.episode_unique_rooms_sanity_warn,
         }
 
 

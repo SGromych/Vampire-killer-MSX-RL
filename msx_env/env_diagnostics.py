@@ -41,6 +41,9 @@ def register_and_assert_resources(env: Any) -> None:
         region = getattr(capture, "_region", None)
         crop = getattr(capture, "_crop_rect", None)
         capture_identity = ("window", tuple(region) if region else None, tuple(crop) if crop else None)
+    elif backend == "dxcam" and capture is not None:
+        region = getattr(capture, "_region", None)
+        capture_identity = ("dxcam", tuple(region) if region else None, None)
     else:
         capture_identity = ("file", screenshot_path, None)
     pid = None
@@ -112,6 +115,8 @@ def print_reset_block(env: Any, obs: Any, rgb: Any) -> None:
         print("  screenshot_path=%s" % screenshot_path)
     if capture_backend == "window" and window_rect is not None:
         print("  window_rect=%s" % (window_rect,))
+    if capture_backend == "dxcam" and window_rect is not None:
+        print("  dxcam_region=%s" % (window_rect,))
     print("  stage=%s stage_conf=%s" % (initial_stage, initial_stage_conf))
     print("  room_hash=%s frame_hash=%s" % (room_short, initial_frame_hash))
 

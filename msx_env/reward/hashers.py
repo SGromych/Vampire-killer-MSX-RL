@@ -115,6 +115,26 @@ def position_proxy_x(obs: np.ndarray) -> float:
     return float(x_center / max(1, w - 1))
 
 
+def position_proxy_y(obs: np.ndarray) -> float:
+    """
+    Вертикальный центр масс «светлых» пикселей (proxy позиции игрока).
+    Возвращает нормализованную Y-координату 0..1.
+    """
+    if obs.ndim == 3:
+        obs = np.asarray(obs).mean(axis=-1)
+    img = np.asarray(obs, dtype=np.float64)
+    thr = np.percentile(img, 70)
+    mask = (img >= thr).astype(np.float64)
+    h, w = mask.shape
+    row_sums = mask.sum(axis=1)
+    total = row_sums.sum()
+    if total < 1:
+        return 0.5
+    y_coords = np.arange(h, dtype=np.float64)
+    y_center = (row_sums * y_coords).sum() / total
+    return float(y_center / max(1, h - 1))
+
+
 # --------- fix-room-metrics-stability: stable hash для эпизодных метрик ---------
 
 def stable_room_hash_playfield(

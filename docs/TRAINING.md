@@ -10,7 +10,7 @@
 - **Модель:** ActorCritic (shared encoder + actor/critic heads), см. `msx_env/ppo_model.py`. Поддержка инициализации из BC (`init_from_bc`).
 - **Окружение:** `VampireKillerEnv` с модульной политикой наград (`RewardPolicy`), см. `docs/REWARD.md`.
 - **Мульти-инстанс:** при `--num-envs > 1` у каждого env свой workdir (`tmp_root/0`, `tmp_root/1`), GAE считается по траекториям отдельно, rollout собирается по очереди (env0, env1, env0, …). Подробнее: `docs/MODULES_AND_FLAGS.md`, секция «Мульти-инстанс».
-- **Захват кадра:** бэкенды png/single/window через `msx_env/capture.py`; калибровка и бенчмарк — `docs/CAPTURE.md`.
+- **Захват кадра:** бэкенды png/single/window/dxcam через `msx_env/capture.py`; по умолчанию в train_ppo — dxcam (без скриншотов на диск); калибровка и бенчмарк — `docs/CAPTURE.md`.
 
 ---
 
@@ -162,7 +162,7 @@ python train_ppo.py --num-envs 4 --run-name exp_4env --log-dir runs/ppo
 - **Логи:** Python — `train.log` в каталоге run'а (`<log-dir>/<run_name>/train.log`); openMSX — по одному файлу на инстанс: `openmsx_0.log`, `openmsx_1.log` в том же каталоге. В консоль при quiet выводятся только предупреждения (guardrails) и **компактный summary**.
 - **Summary:** каждые `--summary-every` обновлений (по умолчанию 10) или не реже чем раз в `--summary-interval-sec` секунд (по умолчанию 60) печатается один блок: uptime, total_steps, steps/s, **Training health** (см. ниже), rollouts, policy_loss, value_loss, entropy, unique_rooms, stage_mean, deaths, stuck, путь к last.pt.
 - **Как понять, что обучение реально идёт:** в каждом summary выводится строка **Training health:** `updates↑ | policy_loss=changing/stable | value_loss=changing/stable | entropy=↓/→/↑ | unique_rooms=↑/→/↓`. Ожидается: updates растут, policy_loss и value_loss меняются между summary, entropy постепенно падает (↓), unique_rooms может расти (↑). Если **steps/s=0**, в блоке появляется предупреждение «rollout может не собираться» — значит, шаги не набираются (env/openMSX зависает или не отдаёт кадры).
-- **Кадр:** во время обучения в консоль не идёт поток «screenshot»; захват по-прежнему пишет в workdir один файл (step_frame.png) для чтения кадра, без дампа отладочных изображений.
+- **Кадр:** при бэкенде **dxcam** (по умолчанию) скриншоты на диск не пишутся; при png/single в workdir перезаписывается step_frame.png. Отладочные дампы изображений — только при явном включении (dump_hud_dir и т.п.).
 
 ---
 

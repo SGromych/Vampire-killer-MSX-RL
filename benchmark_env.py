@@ -1,5 +1,5 @@
 """
-Бенчмарк env: N шагов, steps/sec, сравнение бэкендов capture (png, single, window).
+Бенчмарк env: N шагов, steps/sec, сравнение бэкендов capture (png, single, window, dxcam).
 Метрики: capture_time, preprocessing_time, total step — avg и p95 (мс).
 """
 from __future__ import annotations
@@ -18,7 +18,7 @@ from msx_env.env import EnvConfig, VampireKillerEnv
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Benchmark Vampire Killer env")
-    p.add_argument("--backend", choices=["png", "single", "window"], default="png")
+    p.add_argument("--backend", choices=["png", "single", "window", "dxcam"], default="dxcam")
     p.add_argument("--steps", type=int, default=1000)
     p.add_argument("--action-repeat", type=int, default=1)
     p.add_argument("--decision-fps", type=float, default=None)
@@ -56,8 +56,8 @@ def main() -> None:
         action_repeat=args.action_repeat,
         decision_fps=args.decision_fps,
     )
-    if args.backend == "window":
-        if args.window_crop is not None:
+    if args.backend in ("window", "dxcam"):
+        if args.window_crop is not None and args.backend == "window":
             cfg_kw["window_crop"] = tuple(args.window_crop)
         if args.window_title is not None:
             cfg_kw["window_title"] = args.window_title

@@ -18,6 +18,13 @@ demos/runs/
 # local configs / secrets (если есть)
 .env
 
+# runtime artifacts when run from repo root
+reply.txt
+bootstrap_status.txt
+
+# one-off diagnostic runs
+diagnostics/
+
 !VampireKiller_Map_*.png
 !VampireKiller_Map_*.jpg
 !VampireKiller_Map_*.jpeg

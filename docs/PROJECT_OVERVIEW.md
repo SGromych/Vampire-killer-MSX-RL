@@ -16,7 +16,7 @@ Related entry points:
 
 - **Environment**: `msx_env.env.VampireKillerEnv` wraps openMSX:
   - Control via `openmsx_bridge.OpenMSXFileControl` (file protocol: `commands.tcl` / `reply.txt`).
-  - Capture via `msx_env.capture` (backends `png`, `single`, `window`).
+  - Capture via `msx_env.capture` (backends `png`, `single`, `window`, `dxcam`; default in training: `dxcam`, no screenshots to disk).
   - Observation: \(84\times84\) grayscale `uint8`, frame stack of 4 frames for policies.
 - **Action space**: 10 discrete actions (NOOP, RIGHT, LEFT, UP, DOWN, ATTACK, RIGHT_JUMP, LEFT_JUMP, RIGHT_JUMP_ATTACK, LEFT_JUMP_ATTACK), defined in `msx_env.env`.
 - **Models**:
@@ -33,8 +33,9 @@ Related entry points:
   - `terminated_on_death`, `max_episode_steps`, `reward_config`, `soft_reset`, `post_action_delay_ms`,
   - multi‑env fields: `instance_id`, `tmp_root`, reset‑handshake / perf / debug options.
 - **Capture backends** (`docs/CAPTURE.md`, `msx_env/capture.py`):
+  - `dxcam`: (default in train_ppo) grab window by PID into memory; no PNG files; Windows only.
   - `png` / `single`: openMSX writes a PNG file, Python reads it and converts to \(84\times84\) grayscale.
-  - `window`: grabs pixels from the openMSX window via `dxcam`/`mss`, then the same preprocessing.
+  - `window`: grabs pixels from the openMSX window via `dxcam`/`mss` (by title/crop), then the same preprocessing.
   - All backends are required to produce identical obs format for compatibility with existing datasets.
 
 ---

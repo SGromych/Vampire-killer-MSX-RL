@@ -16,6 +16,11 @@ except ImportError:
     _HOST_INPUT_AVAILABLE = False
 
 try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
     import pygetwindow
     _PYGETWINDOW_AVAILABLE = True
 except ImportError:
@@ -605,47 +610,59 @@ __reply "RID={rid} ok:keyup t=[clock milliseconds]"
         timeout_s: float = 30.0,
         check_every_s: float = 0.5,
         blue_ratio_threshold: float = 0.80,
+        get_frame=None,
     ) -> str:
         """
         Wait until screen is NOT mostly the BIOS blue screen.
 
-        Heuristic: take screenshots periodically, compute fraction of blue-ish pixels,
-        return when blue-ish fraction drops below threshold.
+        If get_frame is provided (callable returning RGB array H,W,3), uses it
+        in-memory and does not write any screenshot files.
+        Otherwise takes screenshots to _bluecheck_*.png and uses Pillow.
 
-        Returns path to the last screenshot that passed the condition.
-        Requires Pillow (pip install Pillow) for pixel analysis.
+        Returns path to the last screenshot that passed, or "" when get_frame was used.
         """
-        if Image is None:
-            raise RuntimeError(
-                "wait_for_nonblue_screen requires Pillow. Install: pip install Pillow"
-            )
-
         deadline = time.time() + timeout_s
         while time.time() < deadline:
-            fn = f"_bluecheck_{int(time.time() * 1000)}.png"
-            self.screenshot(fn, timeout_s=5.0)
-            path = self.workdir / fn
-            if not path.exists():
-                time.sleep(check_every_s)
-                continue
-
-            try:
-                img = Image.open(path).convert("RGB")
-                pixels = list(img.getdata())
-                blue_count = sum(
-                    1 for r, g, b in pixels if b > 150 and b > r and b > g
-                )
-                ratio = blue_count / len(pixels) if pixels else 0
-            except Exception:
-                ratio = 0
+            ratio = 0.0
+            if get_frame is not None and np is not None:
+                try:
+                    frame = get_frame()
+                    if frame is not None and frame.ndim == 3:
+                        r, g, b = frame[:, :, 0], frame[:, :, 1], frame[:, :, 2]
+                        blue_mask = (b > 150) & (b > r) & (b > g)
+                        npx = frame.shape[0] * frame.shape[1]
+                        ratio = float(blue_mask.sum()) / npx if npx else 0
+                except Exception:
+                    ratio = 0
+            else:
+                if Image is None:
+                    raise RuntimeError(
+                        "wait_for_nonblue_screen needs Pillow or get_frame with numpy"
+                    )
+                fn = f"_bluecheck_{int(time.time() * 1000)}.png"
+                self.screenshot(fn, timeout_s=5.0)
+                path = self.workdir / fn
+                if not path.exists():
+                    time.sleep(check_every_s)
+                    continue
+                try:
+                    img = Image.open(path).convert("RGB")
+                    pixels = list(img.getdata())
+                    blue_count = sum(
+                        1 for r, g, b in pixels if b > 150 and b > r and b > g
+                    )
+                    ratio = blue_count / len(pixels) if pixels else 0
+                except Exception:
+                    ratio = 0
+                if ratio >= blue_ratio_threshold:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
             if ratio < blue_ratio_threshold:
-                return str(path)
+                return "" if (get_frame is not None) else str(path)
 
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
             time.sleep(check_every_s)
 
         raise TimeoutError(

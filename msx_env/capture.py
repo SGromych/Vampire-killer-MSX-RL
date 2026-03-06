@@ -113,7 +113,7 @@ class FrameCaptureBackend(ABC):
 class FileCapturePNG(FrameCaptureBackend):
     """
     PNG через openMSX screenshot; каждый раз в один и тот же файл.
-    Текущий метод (обратная совместимость).
+    Используется для отладки и скриптов; в training path по умолчанию используется dxcam.
     """
 
     def __init__(
@@ -165,6 +165,86 @@ class FileCapturePNG(FrameCaptureBackend):
 
     def close(self) -> None:
         pass
+
+
+class DxcamCapture(FrameCaptureBackend):
+    """
+    Прямой захват области экрана (окно openMSX) через dxcam в память.
+    Без записи/чтения PNG. Полный кадр окна (включая HUD), без дополнительного crop.
+    При ошибке инициализации или захвата — исключение, без fallback.
+    """
+
+    def __init__(
+        self,
+        emu: "OpenMSXFileControl",
+        workdir: str | Path,
+        filename: str = "step_frame.png",
+        *,
+        window_title_substring: str = "openMSX",
+        pid: int | None = None,
+        capture_lag_ms: float = 0,
+    ):
+        self._emu = emu
+        self._workdir = Path(workdir)
+        self._filename = filename
+        self._window_title = window_title_substring
+        self._pid = pid or (getattr(emu, "proc", None) and getattr(emu.proc, "pid", None))
+        self._capture_lag_ms = max(0.0, float(capture_lag_ms))
+        self._region: Tuple[int, int, int, int] | None = None
+        self._camera = None
+
+    def start(self) -> None:
+        if os.name != "nt":
+            raise RuntimeError("DxcamCapture is only supported on Windows (dxcam requires it).")
+        self._region = None
+        if self._pid is not None:
+            self._region = _get_window_rect_by_pid(self._pid)
+        if self._region is None and self._window_title:
+            self._region = _get_window_rect_by_title(self._window_title)
+        if self._region is None:
+            raise RuntimeError(
+                "DxcamCapture: could not find window (by pid=%s or title substring=%r). "
+                "Ensure openMSX is running and visible."
+                % (self._pid, self._window_title)
+            )
+        left, top, right, bottom = self._region
+        if right <= left or bottom <= top:
+            raise RuntimeError(
+                "DxcamCapture: invalid window region (left=%s top=%s right=%s bottom=%s)."
+                % (left, top, right, bottom)
+            )
+        try:
+            import dxcam
+            self._camera = dxcam.create(output_color="RGB")
+        except ImportError as e:
+            raise RuntimeError(
+                "DxcamCapture: dxcam is not installed. Install with: pip install dxcam"
+            ) from e
+        except Exception as e:
+            raise RuntimeError("DxcamCapture: dxcam.create() failed: %s" % e) from e
+        logger.info(
+            "[capture] dxcam capture enabled. Region (left, top, right, bottom)=%s. "
+            "PNG disk capture is disabled for this backend.",
+            self._region,
+        )
+
+    def grab(self) -> np.ndarray:
+        if self._camera is None or self._region is None:
+            raise RuntimeError("DxcamCapture: not started or window not found.")
+        if self._capture_lag_ms > 0:
+            time.sleep(self._capture_lag_ms / 1000.0)
+        for attempt in range(10):
+            frame = self._camera.grab(region=self._region)
+            if frame is not None:
+                return np.asarray(frame, dtype=np.uint8)
+            time.sleep(0.001 * (attempt + 1))
+        raise RuntimeError(
+            "DxcamCapture: grab() returned None repeatedly (no new frame). "
+            "Check that the openMSX window is visible and not minimized."
+        )
+
+    def close(self) -> None:
+        self._camera = None
 
 
 class FileCaptureSinglePath(FileCapturePNG):
@@ -310,9 +390,19 @@ def make_capture_backend(
     window_title: str | None = None,
     capture_lag_ms: float = 0,
 ) -> FrameCaptureBackend:
-    """Фабрика бэкендов. backend_name: 'png' | 'single' | 'window'."""
+    """Фабрика бэкендов. backend_name: 'png' | 'single' | 'window' | 'dxcam'."""
     if backend_name in ("png", "single"):
         return FileCapturePNG(emu, workdir, filename)
+    if backend_name == "dxcam":
+        pid = getattr(emu, "proc", None) and getattr(emu.proc, "pid", None)
+        return DxcamCapture(
+            emu,
+            workdir,
+            filename,
+            window_title_substring=window_title or "openMSX",
+            pid=pid,
+            capture_lag_ms=capture_lag_ms,
+        )
     if backend_name == "window":
         pid = getattr(emu, "proc", None) and getattr(emu.proc, "pid", None)
         return WindowCapture(
@@ -325,4 +415,4 @@ def make_capture_backend(
             capture_lag_ms=capture_lag_ms,
             fallback_to_file=True,
         )
-    raise ValueError(f"Unknown capture backend: {backend_name}. Use: png | single | window")
+    raise ValueError(f"Unknown capture backend: {backend_name}. Use: png | single | window | dxcam")

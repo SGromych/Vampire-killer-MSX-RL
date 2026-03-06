@@ -80,6 +80,26 @@ class RewardConfig:
     episode_playfield_crop_right: int = 36  # playfield: без weapon/key/items справа
     episode_unique_rooms_sanity_warn: int = 20  # WARNING если unique_rooms_ep > N
 
+    # Door approach shaping (disabled by default; requires reliable door distance detector)
+    enable_door_distance_reward: bool = False
+    door_distance_reward: float = 0.01
+    door_distance_min_delta: float = 0.0
+    door_distance_clip: float = 0.05
+    door_distance_requires_key: bool = True
+
+    # Block break reward (requires reliable breakable-block detector; disabled by default)
+    enable_block_break_reward: bool = False
+    block_break_reward: float = 0.1
+    block_break_debounce_frames: int = 8
+
+    # Exploration reduction after key found (multiplier for novelty reward)
+    novelty_after_key_multiplier: float = 0.25
+
+    # Position novelty: reward for visiting new (quantized) grid cells per episode
+    enable_position_novelty: bool = False
+    position_novelty_reward: float = 0.005
+    position_novelty_quantize: int = 8  # cell size in pixels (obs coords 0..W-1, 0..H-1)
+
     @classmethod
     def from_dict(cls, d: dict) -> "RewardConfig":
         """Загрузить конфиг из словаря (например из JSON). Неизвестные ключи игнорируются. Обратная совместимость с v1."""
@@ -100,6 +120,11 @@ class RewardConfig:
             "episode_room_debounce_k", "episode_stage_stable_frames",
             "episode_playfield_crop_top", "episode_playfield_crop_bottom", "episode_playfield_crop_right",
             "episode_unique_rooms_sanity_warn",
+            "enable_door_distance_reward", "door_distance_reward",
+            "door_distance_min_delta", "door_distance_clip", "door_distance_requires_key",
+            "enable_block_break_reward", "block_break_reward", "block_break_debounce_frames",
+            "novelty_after_key_multiplier",
+            "enable_position_novelty", "position_novelty_reward", "position_novelty_quantize",
         }
         return cls(**{k: v for k, v in d.items() if k in known})
 
@@ -150,6 +175,18 @@ class RewardConfig:
             "episode_playfield_crop_bottom": self.episode_playfield_crop_bottom,
             "episode_playfield_crop_right": self.episode_playfield_crop_right,
             "episode_unique_rooms_sanity_warn": self.episode_unique_rooms_sanity_warn,
+            "enable_door_distance_reward": self.enable_door_distance_reward,
+            "door_distance_reward": self.door_distance_reward,
+            "door_distance_min_delta": self.door_distance_min_delta,
+            "door_distance_clip": self.door_distance_clip,
+            "door_distance_requires_key": self.door_distance_requires_key,
+            "enable_block_break_reward": self.enable_block_break_reward,
+            "block_break_reward": self.block_break_reward,
+            "block_break_debounce_frames": self.block_break_debounce_frames,
+            "novelty_after_key_multiplier": self.novelty_after_key_multiplier,
+            "enable_position_novelty": self.enable_position_novelty,
+            "position_novelty_reward": self.position_novelty_reward,
+            "position_novelty_quantize": self.position_novelty_quantize,
         }
 
 

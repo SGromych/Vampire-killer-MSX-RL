@@ -7,7 +7,7 @@
 - **`docs/PPO_MODEL.md`** — архитектура PPO (encoder, LSTM, actor/critic), как проверить память (LSTM).
 - **`docs/TRAINING.md`** — PPO: аудит, стабильность, эксперименты (--run-name, --config, --reward-config), guardrails.
 - **`docs/REWARD.md`** — система наград (компоненты, масштабы, отладка).
-- **`docs/CAPTURE.md`** — бэкенды захвата (png/single/window), калибровка окна, бенчмарк.
+- **`docs/CAPTURE.md`** — бэкенды захвата (png/single/window/dxcam), калибровка окна, бенчмарк.
 - **`docs/CAPTURE_REFACTOR_ANALYSIS.md`** — анализ и рефакторинг захвата кадров.
 - **`docs/MULTI_ENV_DEBUG_SESSION.md`** — саммари отладки multi-env (num_envs>1): изменения, ошибки, env0 vs env1, рекомендации и рефакторинг.
 
@@ -20,7 +20,7 @@ RL_msx/
 ├── msx_env/           # Окружение и модели
 │   ├── env.py         # VampireKillerEnv, EnvConfig
 │   ├── env_diagnostics.py  # Реестр ресурсов multi-env, вывод ENV RESET/TERMINATION при debug
-│   ├── capture.py     # Бэкенды захвата (png, single, window)
+│   ├── capture.py     # Бэкенды захвата (png, single, window, dxcam)
 │   ├── make_env.py    # Фабрика env для num_envs (уникальный workdir)
 │   ├── hud_parser.py  # HUD → награда за подбор
 │   ├── life_bar.py    # Оценка полоски жизни (смерть)
@@ -43,7 +43,7 @@ RL_msx/
 ├── train_ppo.py        # Обучение PPO
 ├── test_policy.py      # Тест BC-политики в игре
 ├── test_ppo.py         # Тест PPO-политики в игре
-├── benchmark_env.py    # Бенчмарк env (png/single/window, avg/p95)
+├── benchmark_env.py    # Бенчмарк env (png/single/window/dxcam, avg/p95)
 ├── scripts/
 │   ├── calibrate_window_capture.py  # Калибровка window capture, вывод JSON
 │   └── run_2env_smoke.py             # Ручной smoke 2 env
@@ -82,7 +82,7 @@ RL_msx/
 | `max_episode_steps` | 0 | >0: эпизод обрезается (truncated) по достижении шагов. Для PPO задаётся (например 1500). |
 | `action_repeat` | 1 | N внутренних шагов эмулятора на один захват кадра. >1 уменьшает число захватов за «логический» шаг. |
 | `decision_fps` | None | Фиксированная частота решений (Гц). None — без ограничения. |
-| `capture_backend` | "png" | Бэкенд захвата: "png", "single", "window". |
+| `capture_backend` | "dxcam" в train_ppo, иначе "png" | Бэкенд: "png", "single", "window", "dxcam". |
 | `window_crop` | None | Для window: (x, y, w, h) в координатах экрана. |
 | `window_title` | None | Для window: подстрока в заголовке окна (по умолчанию openMSX). |
 | `capture_lag_ms` | 0 | Задержка (мс) перед grab (уменьшение tearing). |
@@ -109,7 +109,7 @@ RL_msx/
 
 **Назначение:** абстракция захвата кадра. `FrameCaptureBackend`: `start()`, `grab()` → RGB (H,W,3), `close()`. Env вызывает `grab()`, делает resize до `frame_size` и grayscale → obs; тот же RGB передаётся в HUD/награды.
 
-**Бэкенды:** `FileCapturePNG`, `FileCaptureSinglePath` — оба пишут в один файл (step_frame.png) в workdir. Фабрика: `make_capture_backend("png"|"single", emu, workdir, filename)`.
+**Бэкенды:** `FileCapturePNG` / `FileCaptureSinglePath` (png/single — запись step_frame.png в workdir), `DxcamCapture` (dxcam — захват по PID в память, без файлов), `WindowCapture` (window — dxcam/mss по заголовку/crop, с fallback на png). Фабрика: `make_capture_backend("png"|"single"|"window"|"dxcam", ...)`.
 
 Калибровка window: **`python scripts/calibrate_window_capture.py --title openMSX`** (список окон, FPS, dump кадров, JSON-конфиг). Подробнее: **`docs/CAPTURE.md`**.
 
@@ -300,7 +300,7 @@ RL_msx/
 
 **Назначение:** замер производительности env (шагов в секунду/минуту) и времени захвата/препроцессинга (avg, p95) для сравнения бэкендов.
 
-**Флаги:** `--backend` (png | single | window), `--steps` (1000), `--action-repeat`, `--decision-fps`, `--workdir`, `--window-crop` (x y w h), `--window-title`, `--capture-lag-ms`.
+**Флаги:** `--backend` (png | single | window | dxcam, по умолчанию dxcam), `--steps` (1000), `--action-repeat`, `--decision-fps`, `--workdir`, `--window-crop` (x y w h), `--window-title`, `--capture-lag-ms`.
 
 **Команды:**  
 `python benchmark_env.py --backend png`  
@@ -361,7 +361,7 @@ RL_msx/
 | Обучение PPO | `checkpoints/ppo/last.pt`, `epoch_10.pt`, … | `python train_ppo.py [--bc-checkpoint ...] [--epochs 100]` |
 | Тест BC | Консоль (шаги, action, life); openMSX в workdir | `python test_policy.py --checkpoint checkpoints/bc/best.pt` |
 | Тест PPO | То же | `python test_ppo.py --checkpoint checkpoints/ppo/last.pt` |
-| Бенчмарк env | Консоль (steps/sec, avg/p95 capture, prep, step) | `python benchmark_env.py --backend png \| single \| window` |
+| Бенчмарк env | Консоль (steps/sec, avg/p95 capture, prep, step) | `python benchmark_env.py --backend dxcam \| png \| single \| window` |
 | Мульти-env PPO | Без коллизий (уникальные workdir) | `python train_ppo.py --num-envs 2 --tmp-root runs/tmp` |
 
 ---

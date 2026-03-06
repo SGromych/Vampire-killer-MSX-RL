@@ -14,5 +14,8 @@
   "novelty_reward": 0.35,
   "recurrent": true,
   "use_runs_dir": true,
-  "reward_config": "configs/reward_v3.json"
+  "reward_config": "configs/reward_v3.json",
+  "rollout_steps": 512,
+  "entropy_coef": 0.01,
+  "max_episode_steps": 400
 }

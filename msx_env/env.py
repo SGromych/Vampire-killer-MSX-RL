@@ -198,10 +198,11 @@ class VampireKillerEnv:
         if self._capture is None and self._emu is not None:
             backend_name = getattr(self.cfg, "capture_backend", "png")
             kwargs = {}
-            if backend_name == "window":
-                kwargs["window_crop"] = getattr(self.cfg, "window_crop", None)
+            if backend_name in ("window", "dxcam"):
                 kwargs["window_title"] = getattr(self.cfg, "window_title", None)
                 kwargs["capture_lag_ms"] = getattr(self.cfg, "capture_lag_ms", 0)
+            if backend_name == "window":
+                kwargs["window_crop"] = getattr(self.cfg, "window_crop", None)
             self._capture = make_capture_backend(
                 backend_name,
                 self._emu,
@@ -215,8 +216,13 @@ class VampireKillerEnv:
         return self._capture
 
     def _skip_intro(self, emu: OpenMSXFileControl) -> None:
-        # Ждём ухода BIOS‑экрана
-        emu.wait_for_nonblue_screen(timeout_s=30.0, check_every_s=0.5)
+        # Ждём ухода BIOS‑экрана (in-memory через capture — без скриншотов на диск)
+        get_frame = None
+        if self._capture is not None:
+            get_frame = lambda: self._capture.grab()
+        emu.wait_for_nonblue_screen(
+            timeout_s=30.0, check_every_s=0.5, get_frame=get_frame
+        )
         time.sleep(1.0)  # дать заголовку/меню стабилизироваться
         # Пропустить заставку Konami
         emu.press_type("SPACE")
@@ -316,8 +322,9 @@ class VampireKillerEnv:
         """Сброс эпизода. При soft_reset=True процесс openMSX не перезапускается — только «продолжить» клавишами."""
         soft = getattr(self.cfg, "soft_reset", True)
         if self._emu is None:
-            # Первый запуск: поднять процесс и пройти интро
+            # Первый запуск: поднять процесс, capture для in-memory проверки интро, пройти интро
             emu = self._ensure_emu()
+            self._ensure_capture()
             self._skip_intro(emu)
         elif soft:
             # Мягкий сброс: не закрывать процесс, «продолжить» после Game Over
@@ -342,6 +349,7 @@ class VampireKillerEnv:
             self._emu.close()
             self._emu = None
             emu = self._ensure_emu()
+            self._ensure_capture()
             self._skip_intro(emu)
         rgb, obs = self._grab_frame_and_obs()
         # Optional reset handshake: wait for stable stage (multi-env)
@@ -586,7 +594,28 @@ class VampireKillerEnv:
             prev_short = (prev_h or "")[:12] if prev_h else "-"
             new_short = (room_hash or "")[:12] if room_hash else "-"
             eid = env_id if env_id is not None else 0
-            print(f"[ENV {eid}] room change {prev_short} -> {new_short}")
+            stage_curr = info.get("stage", 0)
+            novelty_rooms = info.get("reward_unique_rooms", 0)
+            episode_rooms = info.get("reward_unique_rooms_ep", 0)
+            ep_room_id = info.get("reward_stable_room_id_ep", None) or ""
+            ep_room_id_short = ep_room_id[:24] + "..." if ep_room_id and len(ep_room_id) > 24 else ep_room_id
+            debounce_k = info.get("reward_room_debounce_counter_ep", 0)
+            print(
+                f"[ENV {eid}] room change stage={stage_curr} "
+                f"novelty_hash={prev_short}->{new_short} "
+                f"novelty_rooms={novelty_rooms} episode_rooms_ep={episode_rooms} "
+                f"episode_room_id_ep={ep_room_id_short} debounce_counter_ep={debounce_k}"
+            )
+            # Optional debug frame dump on room change (under debug flags only)
+            if getattr(self.cfg, "debug", False):
+                dump_dir = Path(getattr(self.cfg, "debug_dump_dir", None) or self.cfg.workdir)
+                frames_dir = dump_dir / "debug_frames" / "rooms"
+                try:
+                    frames_dir.mkdir(parents=True, exist_ok=True)
+                    fn = frames_dir / f"env{eid}_step{self._step_count:06d}_room_{new_short or 'none'}.png"
+                    Image.fromarray(obs).save(fn)
+                except Exception:
+                    pass
         if getattr(self.cfg, "debug", False):
             if room_hash is not None:
                 if room_hash != self._debug_prev_room_hash:

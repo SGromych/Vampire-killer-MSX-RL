@@ -14,36 +14,16 @@ import threading
 import time
 from pathlib import Path
 
+from config_loader import load_night_training_config
+
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "configs" / "night_training.json"
 
-DEFAULTS = {
-    "num_envs": 1,
-    "max_updates": 5000,
-    "checkpoint_every": 50,
-    "restart_limit": 20,
-    "watchdog_timeout_minutes": 60,
-    "entropy_floor": 0.3,
-    "auto_entropy_boost": 0.0,
-    "run_name": "auto_night",
-    "checkpoint_dir": "checkpoints/ppo",
-    "log_dir": None,
-    "restart_delay_seconds": 30,
-    "nudge_right_steps": 0,
-    "stuck_nudge_steps": 20,
-    "novelty_reward": 0.35,
-    "recurrent": True,
-}
-
 
 def load_config() -> dict:
-    if not CONFIG_PATH.exists():
-        return DEFAULTS.copy()
-    with open(CONFIG_PATH, encoding="utf-8") as f:
-        cfg = json.load(f)
-    for k, v in DEFAULTS.items():
-        cfg.setdefault(k, v)
-    return cfg
+    """Load night training config via central loader (single source of truth)."""
+    # CONFIG_PATH is kept for clarity; config_loader already defaults to this path.
+    return load_night_training_config()
 
 
 def run_dir_from_config(cfg: dict) -> Path:
@@ -117,6 +97,12 @@ def build_argv(cfg: dict, *, with_resume: bool = True, run_dir_override: Path | 
         argv.extend(["--stuck-nudge-steps", str(cfg["stuck_nudge_steps"])])
     if "novelty_reward" in cfg:
         argv.extend(["--novelty-reward", str(cfg["novelty_reward"])])
+    if "rollout_steps" in cfg:
+        argv.extend(["--rollout-steps", str(cfg["rollout_steps"])])
+    if "entropy_coef" in cfg:
+        argv.extend(["--entropy-coef", str(cfg["entropy_coef"])])
+    if "max_episode_steps" in cfg:
+        argv.extend(["--max-episode-steps", str(cfg["max_episode_steps"])])
     if cfg.get("recurrent", False):
         argv.append("--recurrent")
     if cfg.get("use_runs_dir", False):

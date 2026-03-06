@@ -8,6 +8,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
+import logging
 import numpy as np
 
 from msx_env.hud_parser import HudState, parse_hud, parse_stage
@@ -26,6 +27,10 @@ from msx_env.reward.config import RewardConfig
 from msx_env.reward.diagnostics import EpisodeDiagnostics, update_diagnostics
 from msx_env.reward.episode_metrics import EpisodeRoomTracker, update_episode_room_metrics
 from msx_env.reward.event_detectors import KeyDetector, DoorDetector
+from msx_env.reward.hashers import position_proxy_x, position_proxy_y
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,6 +54,12 @@ class RewardPolicyState:
     stage_candidate_frames: int = 0
     diagnostics: EpisodeDiagnostics = field(default_factory=EpisodeDiagnostics)
     episode_room_tracker: EpisodeRoomTracker = field(default_factory=EpisodeRoomTracker)
+    # Novelty after key: track cumulative sums for diagnostics
+    novelty_reward_pre_key_sum: float = 0.0
+    novelty_reward_post_key_sum: float = 0.0
+    after_key: bool = False
+    # Position novelty: set of (cell_x, cell_y) visited this episode
+    visited_position_cells: set = field(default_factory=set)
 
 
 class RewardPolicy:
@@ -62,6 +73,8 @@ class RewardPolicy:
         self._state = RewardPolicyState()
         self._key_detector = KeyDetector()
         self._door_detector = DoorDetector()
+        self._door_distance_warned: bool = False
+        self._block_break_warned: bool = False
 
     def reset(self) -> None:
         self._state = RewardPolicyState()
@@ -89,6 +102,7 @@ class RewardPolicy:
             "pickup": 0.0,
             "death": 0.0,
             "novelty": 0.0,
+            "position_novelty": 0.0,
             "pingpong": 0.0,
             "stuck": 0.0,
             "progress": 0.0,
@@ -124,16 +138,45 @@ class RewardPolicy:
         state.pickup_state = new_pickup_state
         state.prev_hud = curr_hud
 
-        # 4) Novelty
+        # 4) Novelty (с возможным уменьшением после получения ключа)
         novelty_r, state.novelty_state, unique_count, stable_hash = novelty_component(
             cfg, obs, step, state.novelty_state
         )
-        components["novelty"] = novelty_r
+        novelty_mult = 1.0
+        after_key_mult = getattr(cfg, "novelty_after_key_multiplier", 1.0)
+        if state.after_key and after_key_mult > 0.0 and after_key_mult < 1.0:
+            novelty_mult = after_key_mult
+        scaled_novelty = novelty_r * novelty_mult
+        components["novelty"] = scaled_novelty
         extra["unique_rooms"] = unique_count
         extra["room_hash"] = stable_hash
         extra["novelty_rate"] = unique_count / max(1, step) if step else 0.0
+        # Track pre/post key novelty sums for diagnostics
+        if state.after_key:
+            state.novelty_reward_post_key_sum += scaled_novelty
+        else:
+            state.novelty_reward_pre_key_sum += scaled_novelty
+        extra["novelty_reward_pre_key_sum"] = state.novelty_reward_pre_key_sum
+        extra["novelty_reward_post_key_sum"] = state.novelty_reward_post_key_sum
+        extra["novelty_after_key_multiplier_used"] = novelty_mult
 
         info_for_detectors["reward_room_hash"] = stable_hash
+
+        # 4b) Position novelty: reward for visiting new (quantized) grid cells
+        if getattr(cfg, "enable_position_novelty", False) and obs is not None:
+            quantize = max(1, getattr(cfg, "position_novelty_quantize", 8))
+            reward_val = getattr(cfg, "position_novelty_reward", 0.005) or 0.0
+            if reward_val > 0:
+                h, w = obs.shape[0], obs.shape[1]
+                x_norm = position_proxy_x(obs)
+                y_norm = position_proxy_y(obs)
+                x_px = x_norm * max(0, w - 1)
+                y_px = y_norm * max(0, h - 1)
+                cell = (int(x_px) // quantize, int(y_px) // quantize)
+                if cell not in state.visited_position_cells:
+                    components["position_novelty"] = reward_val
+                    state.visited_position_cells.add(cell)
+                extra["position_novelty_cells_ep"] = len(state.visited_position_cells)
 
         # 5) Ping-pong
         pingpong_r, state.hash_history, pingpong_applied = pingpong_component(
@@ -213,6 +256,14 @@ class RewardPolicy:
                 components["door"] = door_reward_val
                 state.door_rewarded_this_episode = True
 
+        # After-key flag: как только ключ получен (по HUD или детектору), уменьшаем novelty на последующих шагах
+        if not state.after_key:
+            has_key_hud = False
+            if state.prev_hud is not None:
+                has_key_hud = bool(state.prev_hud.key_door or state.prev_hud.key_chest)
+            if has_key_hud or state.key_rewarded_this_episode or extra.get("key_detected", False):
+                state.after_key = True
+
         # Диагностика: room transitions, backtrack, Stage00 exit, after-key
         stage_int, stage_conf_hud = 0, 0.0
         if rgb_for_hud is not None:
@@ -270,6 +321,21 @@ class RewardPolicy:
         state.prev_obs = obs.copy() if obs is not None else None
         state.prev_room_hash = stable_hash
         state.step_index = step + 1
+
+        # Door distance and block break rewards are not implemented yet (нет надёжного сигнала).
+        # Если соответствующие флаги включены в конфиг — вывести предупреждение один раз и не применять shaping.
+        if getattr(cfg, "enable_door_distance_reward", False) and not self._door_distance_warned:
+            logger.warning(
+                "enable_door_distance_reward=True, но детектор расстояния до двери пока не реализован; "
+                "door distance shaping не применяется."
+            )
+            self._door_distance_warned = True
+        if getattr(cfg, "enable_block_break_reward", False) and not self._block_break_warned:
+            logger.warning(
+                "enable_block_break_reward=True, но детектор разрушения блоков пока не реализован; "
+                "block-break reward не применяется."
+            )
+            self._block_break_warned = True
 
         total = sum(components.values())
         # v3: диагностика доминирования

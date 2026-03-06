@@ -205,6 +205,9 @@ def update_episode_room_metrics(
     extra["stable_stage_ep"] = tracker.stable_stage
     extra["stable_room_id_ep"] = srid
     extra["stable_room_ids_ep"] = list(tracker.episode_room_history)[:10]  # first 10 for acceptance test
+    # Debug counters for room stability / debounce
+    extra["room_debounce_counter_ep"] = tracker.candidate_count
+    extra["room_candidate_hash_ep"] = tracker.candidate_room_hash
 
     # ---- Sanity warning ----
     if unique_count > sanity_unique_rooms_warn_threshold:

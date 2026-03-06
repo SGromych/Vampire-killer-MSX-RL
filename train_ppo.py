@@ -105,14 +105,14 @@ def _write_metrics_header(path: Path, run_id: str = "", hostname: str = "", pid:
     if not path.exists():
         base = (
             "update,steps_per_sec,steps_per_sec_per_env,rollout_fps,sample_throughput,policy_loss,value_loss,entropy,approx_kl,explained_var,"
-            "reward_mean,ep_return_mean,ep_return_min,ep_return_max,ep_steps_mean,ep_len_min,ep_len_max,"
+            "reward_mean,ep_return_mean,ep_return_min,ep_return_max,ep_steps_mean,avg_episode_length,ep_len_min,ep_len_max,"
             "unique_rooms_mean,unique_rooms_min,unique_rooms_max,deaths,stuck_events,"
             "ep_return_env0,ep_return_env1,ep_len_env0,ep_len_env1,unique_rooms_env0,unique_rooms_env1,"
             "room_transition_env0,room_transition_env1,deaths_env0,deaths_env1,stage_env0,stage_env1,"
             "stage00_exit_rate,stage00_exit_steps_mean,stage00_room_trans_mean,stage00_time_to_exit_steps,candles_broken_stage00,"
             "backtrack_rate_mean,room_dwell_steps_mean,door_encounter_count_mean,loop_len_max_mean,"
-            "steps_after_key_total_mean,steps_after_key_until_exit_mean,steps_after_key_until_death_mean,"
-            "reward_step,reward_pickup,reward_death,reward_novelty,reward_pingpong,reward_stuck,reward_key,reward_door,reward_backtrack,"
+            "key_found_rate,door_found_rate,steps_after_key_total_mean,steps_after_key_until_exit_mean,steps_after_key_until_death_mean,"
+            "reward_step,reward_pickup,reward_death,reward_novelty,reward_position_novelty,reward_pingpong,reward_stuck,reward_key,reward_door,reward_backtrack,"
             "reward_stage_step,reward_stage_advance,"
             "recurrent_hidden_norm_mean,recurrent_hidden_norm_std,recurrent_hidden_delta_mean,"
             "resume_count,last_resume_update,"
@@ -184,6 +184,8 @@ def _append_metrics(
     room_dwell_steps_mean: float = -1.0,
     door_encounter_count_mean: float = 0.0,
     loop_len_max_mean: float = 0.0,
+    key_found_rate: float = 0.0,
+    door_found_rate: float = 0.0,
     steps_after_key_total_mean: float = -1.0,
     steps_after_key_until_exit_mean: float = -1.0,
     steps_after_key_until_death_mean: float = -1.0,
@@ -229,7 +231,7 @@ def _append_metrics(
         f"{update},{steps_per_sec:.2f},{steps_per_sec_per_env:.2f},{rollout_fps:.1f},{sample_throughput:.0f},"
         f"{policy_loss:.6f},{value_loss:.6f},{entropy:.6f},{approx_kl:.6f},{explained_var:.6f},"
         f"{reward_mean:.4f},{ep_return_mean:.2f},{ep_return_min:.2f},{ep_return_max:.2f},"
-        f"{ep_steps_mean:.1f},{ep_len_min:.1f},{ep_len_max:.1f},"
+        f"{ep_steps_mean:.1f},{ep_steps_mean:.1f},{ep_len_min:.1f},{ep_len_max:.1f},"
         f"{unique_rooms_mean:.2f},{unique_rooms_min},{unique_rooms_max},{deaths},{stuck_events},"
         f"{ep_return_env0:.2f},{ep_return_env1:.2f},{ep_len_env0:.1f},{ep_len_env1:.1f},"
         f"{unique_rooms_env0:.2f},{unique_rooms_env1:.2f},"
@@ -237,9 +239,10 @@ def _append_metrics(
         f"{stage00_exit_rate:.2f},{stage00_exit_steps_mean:.1f},{stage00_room_trans_mean:.1f},"
         f"{stage00_time_to_exit_steps:.1f},{candles_broken_stage00:.1f},"
         f"{backtrack_rate_mean:.4f},{room_dwell_steps_mean:.1f},{door_encounter_count_mean:.1f},{loop_len_max_mean:.1f},"
-        f"{steps_after_key_total_mean:.1f},{steps_after_key_until_exit_mean:.1f},{steps_after_key_until_death_mean:.1f},"
+        f"{key_found_rate:.2f},{door_found_rate:.2f},{steps_after_key_total_mean:.1f},{steps_after_key_until_exit_mean:.1f},{steps_after_key_until_death_mean:.1f},"
         f"{components_avg.get('step', 0):.4f},{components_avg.get('pickup', 0):.4f},"
         f"{components_avg.get('death', 0):.4f},{components_avg.get('novelty', 0):.4f},"
+        f"{components_avg.get('position_novelty', 0):.4f},"
         f"{components_avg.get('pingpong', 0):.4f},{components_avg.get('stuck', 0):.4f},"
         f"{components_avg.get('key', 0):.4f},{components_avg.get('door', 0):.4f},{components_avg.get('backtrack', 0):.4f},"
         f"{components_avg.get('stage_step', 0):.4f},{components_avg.get('stage_advance', 0):.4f},"
@@ -437,7 +440,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--arch", choices=["default", "deep"], default="deep")
     p.add_argument("--action-repeat", type=int, default=1, help="N внутренних шагов на 1 захват (backward compat: 1)")
     p.add_argument("--decision-fps", type=float, default=None, help="фикс. частота решений (10–15 Hz), None=макс. скорость")
-    p.add_argument("--capture-backend", choices=["png", "single", "window"], default="png")
+    p.add_argument("--capture-backend", choices=["png", "single", "window", "dxcam"], default="dxcam")
     p.add_argument("--num-envs", type=int, default=1, help="число параллельных env (уникальный workdir на инстанс)")
     p.add_argument("--tmp-root", type=str, default="runs/tmp", help="база для workdir при num_envs>1")
     p.add_argument("--post-action-delay-ms", type=float, default=None, help="задержка после действия перед grab (мс). При num-envs>1 по умолчанию 50")
@@ -615,6 +618,8 @@ def main() -> None:
             getattr(config.reward_config, "enable_stage_reward", False),
         )
         logging.getLogger(__name__).info("Capture backend: %s", config.env_schema.capture_backend)
+        if config.env_schema.capture_backend == "dxcam":
+            logging.getLogger(__name__).info("PNG disk capture disabled in training path (using dxcam in-memory).")
     else:
         args = parse_args()
         if _has_project_config:
@@ -628,6 +633,8 @@ def main() -> None:
                 getattr(config.reward_config, "enable_stage_reward", False),
             )
             logging.getLogger(__name__).info("Capture backend: %s", config.env_schema.capture_backend)
+            if config.env_schema.capture_backend == "dxcam":
+                logging.getLogger(__name__).info("PNG disk capture disabled in training path (using dxcam in-memory).")
 
     device = torch.device(args.device)
     rom = ROOT / "VAMPIRE.ROM"
@@ -723,7 +730,7 @@ def main() -> None:
         max_episode_steps=args.max_episode_steps,
         action_repeat=getattr(args, "action_repeat", 1),
         decision_fps=getattr(args, "decision_fps", None),
-        capture_backend=getattr(args, "capture_backend", "png"),
+        capture_backend=getattr(args, "capture_backend", "dxcam"),
         reward_config=reward_config,
         tmp_root=tmp_root_abs,
         post_action_delay_ms=post_delay,
@@ -1217,6 +1224,10 @@ def main() -> None:
         steps_after_key_until_exit_mean = float(np.mean(sak_exit_list)) if sak_exit_list else -1.0
         steps_after_key_until_death_mean = float(np.mean(sak_death_list)) if sak_death_list else -1.0
 
+        # Key/door diagnostics: fraction of episodes where key was obtained / door encountered
+        key_found_rate = float(np.mean([1.0 if e[12] >= 0 else 0.0 for e in episode_stats])) if episode_stats else 0.0
+        door_found_rate = float(np.mean([1.0 if e[16] > 0 else 0.0 for e in episode_stats])) if episode_stats else 0.0
+
         room_dwell_list = [e[15] for e in episode_stats if e[15] >= 0]
         room_dwell_steps_mean = float(np.mean(room_dwell_list)) if room_dwell_list else -1.0
         door_enc_list = [e[16] for e in episode_stats]
@@ -1236,6 +1247,11 @@ def main() -> None:
         unique_rooms_ep_mean_val = float(np.mean(ur_ep_list)) if ur_ep_list else 0.0
         unique_rooms_ep_min_val = min(ur_ep_list, default=0)
         unique_rooms_ep_max_val = max(ur_ep_list, default=0)
+        if unique_rooms_ep_max_val > 20:
+            logger.warning(
+                "[room-metrics] unique_rooms_ep_max=%d > 20 (anomaly; possible room hash jitter).",
+                unique_rooms_ep_max_val,
+            )
         room_transitions_ep_mean_val = float(np.mean(room_trans_ep_list)) if room_trans_ep_list else 0.0
         room_dwell_steps_ep_mean_val = float(np.mean(dwell_ep_list)) if dwell_ep_list else -1.0
         stage00_exit_rate_ep_val = float(np.mean(s00_exit_recorded_list)) if s00_exit_recorded_list else 0.0
@@ -1291,6 +1307,12 @@ def main() -> None:
                     d = (roll_h[j] - roll_h[j - 1]).norm().item()
                     deltas.append(d)
                 h_delta_mean = float(np.mean(deltas)) if deltas else 0.0
+                if h_delta_mean < 1e-5:
+                    logger.warning(
+                        "Recurrent LSTM hidden_delta_mean=%.6f is very small — LSTM state changes are minimal; "
+                        "check recurrent configuration and learning dynamics.",
+                        h_delta_mean,
+                    )
 
         # PPO update: несколько эпох по мини-батчам с перемешиванием
         n = len(roll_obs)
@@ -1475,6 +1497,8 @@ def main() -> None:
             room_dwell_steps_mean=room_dwell_steps_mean,
             door_encounter_count_mean=door_encounter_count_mean,
             loop_len_max_mean=loop_len_max_mean,
+            key_found_rate=key_found_rate,
+            door_found_rate=door_found_rate,
             steps_after_key_total_mean=steps_after_key_total_mean,
             steps_after_key_until_exit_mean=steps_after_key_until_exit_mean,
             steps_after_key_until_death_mean=steps_after_key_until_death_mean,
@@ -1531,9 +1555,9 @@ def main() -> None:
                 updates_per_hour = (updates_done / elapsed) * 3600 if elapsed > 0 else 0
                 print(
                     f"\n[DRY RUN] {elapsed:.1f}s  total_steps={total_steps}  updates={updates_done}\n"
-                    f"  steps/sec = {steps_per_sec:.2f}  steps/hour ≈ {steps_per_sec * 3600:,.0f}\n"
+                    f"  steps/sec = {steps_per_sec:.2f}  steps/hour ~ {steps_per_sec * 3600:,.0f}\n"
                     f"  updates/hour = {updates_per_hour:.1f}\n"
-                    f"  Estimated max_total_steps for 8h at this speed: ≈ {int(steps_per_sec * 3600 * 8):,}"
+                    f"  Estimated max_total_steps for 8h at this speed: ~ {int(steps_per_sec * 3600 * 8):,}"
                 )
                 break
 

@@ -25,7 +25,7 @@
 | Модули, флаги, выходы | `docs/MODULES_AND_FLAGS.md` |
 | **PPO: обучение, аудит, эксперименты** | **`docs/TRAINING.md`** |
 | Награды (v1, компоненты) | `docs/REWARD.md` |
-| Захват кадра (png/window) | `docs/CAPTURE.md` |
+| Захват кадра (png/window/dxcam) | `docs/CAPTURE.md` |
 | Запись демо | `demos/record_demo.py` → `demos/runs/<run_id>/` |
 | Обучение BC | `train_bc.py` → `checkpoints/bc/` |
 | Обучение PPO | `train_ppo.py` → `checkpoints/ppo/` |
@@ -147,7 +147,7 @@
 - **MODULES_AND_FLAGS.md** — все точки входа, флаги, каталоги вывода, таблица EnvConfig (включая `post_action_delay_ms`, `soft_reset`, `num_envs`, `tmp_root`).
 - **TRAINING.md** — PPO: аудит, стабильность, эксперименты (--run-name, --config, --reward-config), guardrails, отладка.
 - **REWARD.md** — система наград (v1, компоненты, отладка).
-- **CAPTURE.md** — бэкенды захвата (png, single, window), калибровка окна.
+- **CAPTURE.md** — бэкенды захвата (png, single, window, dxcam), калибровка окна.
 
 ---
 

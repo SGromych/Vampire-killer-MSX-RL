@@ -99,6 +99,8 @@ def build_argv(cfg: dict, *, with_resume: bool = True, run_dir_override: Path | 
         argv.extend(["--novelty-reward", str(cfg["novelty_reward"])])
     if "rollout_steps" in cfg:
         argv.extend(["--rollout-steps", str(cfg["rollout_steps"])])
+    if "action_repeat" in cfg:
+        argv.extend(["--action-repeat", str(cfg["action_repeat"])])
     if "entropy_coef" in cfg:
         argv.extend(["--entropy-coef", str(cfg["entropy_coef"])])
     if "max_episode_steps" in cfg:
@@ -111,6 +113,8 @@ def build_argv(cfg: dict, *, with_resume: bool = True, run_dir_override: Path | 
         argv.append("--no-reset-handshake")
     if cfg.get("reward_config"):
         argv.extend(["--reward-config", str(cfg["reward_config"])])
+    if cfg.get("bc_checkpoint"):
+        argv.extend(["--bc-checkpoint", str(cfg["bc_checkpoint"])])
     return argv
 
 

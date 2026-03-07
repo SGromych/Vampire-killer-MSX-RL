@@ -18,6 +18,7 @@ NIGHT_TRAINING_PATH = ROOT / "configs" / "night_training.json"
 
 # Defaults mirror train_supervisor semantics and are merged with night_training.json.
 NIGHT_DEFAULTS: Dict[str, Any] = {
+    "bc_checkpoint": None,
     "num_envs": 1,
     "max_updates": 5000,
     "checkpoint_every": 50,
@@ -30,12 +31,13 @@ NIGHT_DEFAULTS: Dict[str, Any] = {
     "log_dir": None,
     "restart_delay_seconds": 30,
     "nudge_right_steps": 0,
-    "stuck_nudge_steps": 20,
+    "stuck_nudge_steps": 0,
     "novelty_reward": 0.35,
     "recurrent": True,
     # PPO‑related knobs that must be in sync with train_ppo defaults
     "rollout_steps": 256,
     "entropy_coef": 0.02,
+    "action_repeat": 2,
 }
 
 

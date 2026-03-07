@@ -52,6 +52,38 @@ def _get_window_rect_by_pid(pid: int) -> Tuple[int, int, int, int] | None:
         return None
 
 
+def _bring_window_to_foreground(pid: int) -> bool:
+    """Windows: вывести окно процесса на передний план (для захвата при 2+ env). Возвращает True если нашли окно."""
+    if os.name != "nt" or pid is None:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        result = [None]
+
+        def enum_cb(hwnd, _):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            p = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
+            if p.value == pid:
+                result[0] = hwnd
+                return False
+            return True
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+        hwnd = result[0]
+        if hwnd is None:
+            return False
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.03)
+        return True
+    except Exception:
+        return False
+
+
 def _get_window_rect_by_title(substring: str) -> Tuple[int, int, int, int] | None:
     """Windows: (left, top, right, bottom) первого видимого окна с substring в заголовке."""
     if os.name != "nt" or not substring:
@@ -196,16 +228,27 @@ class DxcamCapture(FrameCaptureBackend):
     def start(self) -> None:
         if os.name != "nt":
             raise RuntimeError("DxcamCapture is only supported on Windows (dxcam requires it).")
+        # Окно openMSX может появиться с задержкой после старта процесса,
+        # поэтому несколько раз пробуем найти его по PID/заголовку.
         self._region = None
-        if self._pid is not None:
-            self._region = _get_window_rect_by_pid(self._pid)
-        if self._region is None and self._window_title:
-            self._region = _get_window_rect_by_title(self._window_title)
+        deadline = time.time() + 10.0
+        last_err: str | None = None
+        while self._region is None and time.time() < deadline:
+            region = None
+            if self._pid is not None:
+                region = _get_window_rect_by_pid(self._pid)
+            if region is None and self._window_title:
+                region = _get_window_rect_by_title(self._window_title)
+            if region is not None:
+                self._region = region
+                break
+            last_err = f"pid={self._pid} title_substring={self._window_title!r}"
+            time.sleep(0.2)
         if self._region is None:
             raise RuntimeError(
-                "DxcamCapture: could not find window (by pid=%s or title substring=%r). "
-                "Ensure openMSX is running and visible."
-                % (self._pid, self._window_title)
+                "DxcamCapture: could not find window (by pid/title). "
+                "Ensure openMSX is running and visible. "
+                f"Last attempt: {last_err}"
             )
         left, top, right, bottom = self._region
         if right <= left or bottom <= top:
@@ -233,14 +276,19 @@ class DxcamCapture(FrameCaptureBackend):
             raise RuntimeError("DxcamCapture: not started or window not found.")
         if self._capture_lag_ms > 0:
             time.sleep(self._capture_lag_ms / 1000.0)
-        for attempt in range(10):
+        # При 2+ env выводим окно на передний план, иначе dxcam может захватить другое окно
+        if self._pid is not None:
+            _bring_window_to_foreground(self._pid)
+        # При нескольких env окно может быть перекрыто; даём больше попыток и пауз
+        max_attempts = 25
+        for attempt in range(max_attempts):
             frame = self._camera.grab(region=self._region)
             if frame is not None:
                 return np.asarray(frame, dtype=np.uint8)
-            time.sleep(0.001 * (attempt + 1))
+            time.sleep(0.02 * (attempt + 1))
         raise RuntimeError(
             "DxcamCapture: grab() returned None repeatedly (no new frame). "
-            "Check that the openMSX window is visible and not minimized."
+            "Check that the openMSX window is visible and not minimized (with 2 env, place windows side-by-side)."
         )
 
     def close(self) -> None:

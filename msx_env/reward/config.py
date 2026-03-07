@@ -92,6 +92,10 @@ class RewardConfig:
     block_break_reward: float = 0.1
     block_break_debounce_frames: int = 8
 
+    # Небольшая награда за использование ATTACK (с cooldown), чтобы стимулировать ломать блоки/свечи
+    attack_use_reward: float = 0.0  # >0: бонус за шаг с action=ATTACK (раз в cooldown шагов)
+    attack_use_cooldown_steps: int = 15  # минимум шагов между наградами за ATTACK
+
     # Exploration reduction after key found (multiplier for novelty reward)
     novelty_after_key_multiplier: float = 0.25
 
@@ -123,6 +127,7 @@ class RewardConfig:
             "enable_door_distance_reward", "door_distance_reward",
             "door_distance_min_delta", "door_distance_clip", "door_distance_requires_key",
             "enable_block_break_reward", "block_break_reward", "block_break_debounce_frames",
+            "attack_use_reward", "attack_use_cooldown_steps",
             "novelty_after_key_multiplier",
             "enable_position_novelty", "position_novelty_reward", "position_novelty_quantize",
         }
@@ -183,6 +188,8 @@ class RewardConfig:
             "enable_block_break_reward": self.enable_block_break_reward,
             "block_break_reward": self.block_break_reward,
             "block_break_debounce_frames": self.block_break_debounce_frames,
+            "attack_use_reward": self.attack_use_reward,
+            "attack_use_cooldown_steps": self.attack_use_cooldown_steps,
             "novelty_after_key_multiplier": self.novelty_after_key_multiplier,
             "enable_position_novelty": self.enable_position_novelty,
             "position_novelty_reward": self.position_novelty_reward,

@@ -84,8 +84,8 @@ class EnvConfig:
     # Режим RL: terminated при смерти, truncated при max_episode_steps (0 = без лимита)
     terminated_on_death: bool = False  # True: при падении жизни — terminated
     max_episode_steps: int = 0  # >0: truncated при достижении (для RL)
-    # Performance: action_repeat=1 (backward compat), decision_fps=None (no throttle)
-    action_repeat: int = 1  # N внутренних шагов эмулятора на 1 захват кадра
+    # Performance: action_repeat=2 reduces emulator overhead; decision_fps=None (no throttle)
+    action_repeat: int = 2  # N internal emulator steps per logical step (2 = repeat action twice, one obs)
     decision_fps: float | None = None  # фиксированная частота решений (10–15 Hz)
     capture_backend: str = "png"  # png | single | window
     window_crop: Tuple[int, int, int, int] | None = None  # (x, y, w, h) для window backend
@@ -412,133 +412,151 @@ class VampireKillerEnv:
         if force:
             action = _debug_force_action_to_id(force, action)
         emu = self._ensure_emu()
-        action_repeat = getattr(self.cfg, "action_repeat", 1)
+        action_repeat = getattr(self.cfg, "action_repeat", 2)
         decision_fps = getattr(self.cfg, "decision_fps", None)
         step_duration_s = 1.0 / decision_fps if decision_fps and decision_fps > 0 else 0.0
 
         t_action_start = time.perf_counter() if perf else 0
         if getattr(self.cfg, "debug", False) and self._step_count < 3:
             print_step_control(self, emu)
-        self._apply_action(emu, int(action))
-
-        for _ in range(action_repeat - 1):
-            if step_duration_s > 0:
-                time.sleep(step_duration_s)
-            self._apply_action(emu, int(action))
 
         delay_ms = getattr(self.cfg, "post_action_delay_ms", 0.0)
-        if delay_ms > 0:
-            time.sleep(delay_ms / 1000.0)
+        n_repeats = max(1, int(action_repeat))
+        # frame_skip = action_repeat: reward only on last frame (faster, one transition per logical step)
+        reward_on_last_frame_only = n_repeats > 1
+        total_reward = 0.0
+        obs, rgb, info = None, None, {}
+
+        for repeat_idx in range(n_repeats):
+            self._apply_action(emu, int(action))
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1000.0)
+            if repeat_idx < n_repeats - 1 and step_duration_s > 0:
+                time.sleep(step_duration_s)
+
+            t_grab_start = time.perf_counter() if perf else 0
+            rgb, obs = self._grab_frame_and_obs()
+            if perf:
+                t_capture_preproc_ms = (time.perf_counter() - t_grab_start) * 1000
+                self._perf_acc.record("t_capture_ms", t_capture_preproc_ms, env_id)
+
+            next_step = self._step_count + 1
+            dump_n = getattr(self.cfg, "dump_hud_every_n_steps", 0)
+            dump_dir = getattr(self.cfg, "dump_hud_dir", None)
+            if dump_n > 0 and dump_dir and next_step % dump_n == 0 and repeat_idx == n_repeats - 1:
+                try:
+                    d = Path(dump_dir)
+                    d.mkdir(parents=True, exist_ok=True)
+                    eid = getattr(self.cfg, "instance_id", 0)
+                    fn = d / f"hud_env{eid}_step{next_step}.png"
+                    hud_crop = rgb[: min(24, rgb.shape[0]), :, :]
+                    Image.fromarray(hud_crop).save(fn)
+                except Exception:
+                    pass
+
+            # Reward and life/termination only on last frame when frame_skip = action_repeat
+            if not reward_on_last_frame_only or repeat_idx == n_repeats - 1:
+                info = {}
+                if env_id is not None:
+                    info["env_id"] = env_id
+
+                terminated_by_death = False
+                life: float = 0.5
+                life_prev_for_signal: float = self._life_prev
+                if getattr(self.cfg, "terminated_on_death", False):
+                    life = get_life_estimate(obs)
+                    warmup = getattr(self.cfg, "death_warmup_steps", 50)
+                    if self._step_count < warmup:
+                        self._death_low_life_steps = 0
+                        self._life_prev = life
+                    else:
+                        if life < 0.15:
+                            self._death_low_life_steps += 1
+                            if self._death_low_life_steps >= 2 and self._life_prev > 0.3:
+                                terminated_by_death = True
+                        else:
+                            self._death_low_life_steps = 0
+                        self._life_prev = life
+
+                t_reward_start = time.perf_counter() if perf else 0
+                info["action"] = action
+                reward = 0.0
+                if self._reward_policy is not None:
+                    r, components, extra = self._reward_policy.compute(
+                        self._prev_obs,
+                        obs,
+                        info,
+                        terminated=False,
+                        truncated=False,
+                        terminated_by_death=terminated_by_death,
+                        rgb_for_hud=rgb,
+                    )
+                    reward = r
+                    info["reward_components"] = components
+                    self._reward_logger.add_step(reward, components, extra)
+                    info["episode_reward_components"] = self._reward_logger.get_episode_components()
+                    for k, v in extra.items():
+                        info[f"reward_{k}"] = v
+                    try:
+                        curr_hud = parse_hud(rgb)
+                        info["hud"] = {"weapon": curr_hud.weapon, "key_chest": curr_hud.key_chest, "key_door": curr_hud.key_door, "items": curr_hud.items}
+                    except Exception:
+                        pass
+                    try:
+                        stage_int, stage_conf = parse_stage(rgb)
+                        info["stage"] = stage_int
+                        info["stage_conf"] = stage_conf
+                    except Exception:
+                        info["stage"] = 0
+                        info["stage_conf"] = 0.0
+                else:
+                    if getattr(self.cfg, "hud_reward", True):
+                        try:
+                            curr_hud = parse_hud(rgb)
+                            reward = compute_pickup_reward(self._prev_hud, curr_hud)
+                            self._prev_hud = curr_hud
+                            info["hud"] = {
+                                "weapon": curr_hud.weapon,
+                                "key_chest": curr_hud.key_chest,
+                                "key_door": curr_hud.key_door,
+                                "items": curr_hud.items,
+                            }
+                        except Exception:
+                            pass
+                    try:
+                        stage_int, stage_conf = parse_stage(rgb)
+                        info["stage"] = stage_int
+                        info["stage_conf"] = stage_conf
+                    except Exception:
+                        info["stage"] = 0
+                        info["stage_conf"] = 0.0
+                    if terminated_by_death:
+                        reward = reward - 1.0
+
+                if perf:
+                    t_reward_ms = (time.perf_counter() - t_reward_start) * 1000
+                    self._perf_acc.record("t_reward_ms", t_reward_ms, env_id)
+
+                if reward_on_last_frame_only:
+                    total_reward = reward
+                else:
+                    total_reward += reward
+                self._prev_obs = obs.copy()
+
+                terminated = terminated_by_death
+                if getattr(self.cfg, "ignore_death", False) and terminated_by_death:
+                    terminated = False
+                    info["death_detected_but_ignored"] = True
+                truncated = self._reward_policy is not None and info.get("reward_stuck_truncate", False)
+                if terminated or truncated:
+                    break
+
         if perf:
             t_action_ms = (time.perf_counter() - t_action_start) * 1000
             self._perf_acc.record("t_action_send_ms", t_action_ms, env_id)
 
-        t_grab_start = time.perf_counter() if perf else 0
-        rgb, obs = self._grab_frame_and_obs()
-        if perf:
-            t_capture_preproc_ms = (time.perf_counter() - t_grab_start) * 1000
-            self._perf_acc.record("t_capture_ms", t_capture_preproc_ms, env_id)
-        # fix-room-metrics-stability: dump HUD crop для отладки stage detector
-        dump_n = getattr(self.cfg, "dump_hud_every_n_steps", 0)
-        dump_dir = getattr(self.cfg, "dump_hud_dir", None)
-        next_step = self._step_count + 1
-        if dump_n > 0 and dump_dir and next_step % dump_n == 0:
-            try:
-                from pathlib import Path
-                d = Path(dump_dir)
-                d.mkdir(parents=True, exist_ok=True)
-                eid = getattr(self.cfg, "instance_id", 0)
-                fn = d / f"hud_env{eid}_step{next_step}.png"
-                hud_crop = rgb[: min(24, rgb.shape[0]), :, :]
-                Image.fromarray(hud_crop).save(fn)
-            except Exception:
-                pass
-        reward = 0.0
-        info: Dict[str, Any] = {}
-        env_id = getattr(self.cfg, "instance_id", None)
-        if env_id is not None:
-            info["env_id"] = env_id
-
-        terminated_by_death = False
-        life: float = 0.5
-        life_prev_for_signal: float = self._life_prev
-        if getattr(self.cfg, "terminated_on_death", False):
-            life = get_life_estimate(obs)
-            warmup = getattr(self.cfg, "death_warmup_steps", 50)
-            if self._step_count < warmup:
-                # В warmup не объявляем смерть — артефакты кадра/переходов дают ложные life≈0
-                self._death_low_life_steps = 0
-                self._life_prev = life
-            else:
-                if life < 0.15:
-                    self._death_low_life_steps += 1
-                    if self._death_low_life_steps >= 2 and self._life_prev > 0.3:
-                        terminated_by_death = True
-                else:
-                    self._death_low_life_steps = 0
-                self._life_prev = life
-
-        t_reward_start = time.perf_counter() if perf else 0
-        if self._reward_policy is not None:
-            total_reward, components, extra = self._reward_policy.compute(
-                self._prev_obs,
-                obs,
-                info,
-                terminated=False,
-                truncated=False,
-                terminated_by_death=terminated_by_death,
-                rgb_for_hud=rgb,
-            )
-            reward = total_reward
-            info["reward_components"] = components
-            self._reward_logger.add_step(reward, components, extra)
-            info["episode_reward_components"] = self._reward_logger.get_episode_components()
-            for k, v in extra.items():
-                info[f"reward_{k}"] = v
-            try:
-                curr_hud = parse_hud(rgb)
-                info["hud"] = {"weapon": curr_hud.weapon, "key_chest": curr_hud.key_chest, "key_door": curr_hud.key_door, "items": curr_hud.items}
-            except Exception:
-                pass
-            try:
-                stage_int, stage_conf = parse_stage(rgb)
-                info["stage"] = stage_int
-                info["stage_conf"] = stage_conf
-            except Exception:
-                info["stage"] = 0
-                info["stage_conf"] = 0.0
-        else:
-            if getattr(self.cfg, "hud_reward", True):
-                try:
-                    curr_hud = parse_hud(rgb)
-                    reward = compute_pickup_reward(self._prev_hud, curr_hud)
-                    self._prev_hud = curr_hud
-                    info["hud"] = {
-                        "weapon": curr_hud.weapon,
-                        "key_chest": curr_hud.key_chest,
-                        "key_door": curr_hud.key_door,
-                        "items": curr_hud.items,
-                    }
-                except Exception:
-                    pass
-            try:
-                stage_int, stage_conf = parse_stage(rgb)
-                info["stage"] = stage_int
-                info["stage_conf"] = stage_conf
-            except Exception:
-                info["stage"] = 0
-                info["stage_conf"] = 0.0
-            if terminated_by_death:
-                reward = reward - 1.0
-
-        if perf:
-            t_reward_ms = (time.perf_counter() - t_reward_start) * 1000
-            self._perf_acc.record("t_reward_ms", t_reward_ms, env_id)
-
-        terminated = terminated_by_death
-        if getattr(self.cfg, "ignore_death", False) and terminated_by_death:
-            terminated = False
-            info["death_detected_but_ignored"] = True
+        reward = total_reward
+        if getattr(self.cfg, "ignore_death", False) and info.get("death_detected_but_ignored"):
             raw_signal = {"life": life, "life_prev": life_prev_for_signal, "death_threshold": 0.15, "prev_threshold": 0.3}
             info["termination_reason"] = "death_ignored"
             info["raw_death_signals"] = raw_signal
@@ -552,7 +570,6 @@ class VampireKillerEnv:
                     f"[debug] death detected but ignored (ignore_death=True) step={self._step_count} hp={life} "
                     f"life_prev={life_prev_for_signal} raw_signals={raw_signal}"
                 )
-        truncated = False
         self._step_count += 1
 
         if self._reward_policy is not None and info.get("reward_stuck_truncate"):
@@ -647,7 +664,7 @@ class VampireKillerEnv:
                 )
                 if force:
                     hold_ms = "keydown_hold"
-                    action_repeat_val = getattr(self.cfg, "action_repeat", 1)
+                    action_repeat_val = getattr(self.cfg, "action_repeat", 2)
                     line += f" | action_name={act_name} hold_ms={hold_ms} action_repeat={action_repeat_val}"
                 print(line)
             dump_n = getattr(self.cfg, "debug_dump_frames", 0)
@@ -658,8 +675,6 @@ class VampireKillerEnv:
                 out = frames_dir / f"step_{self._step_count:05d}.png"
                 Image.fromarray(obs).save(out)
                 self._debug_dumped_count += 1
-
-        self._prev_obs = obs.copy()
 
         if terminated or truncated:
             # Ensure termination_reason is single canonical value for logging

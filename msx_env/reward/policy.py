@@ -60,6 +60,8 @@ class RewardPolicyState:
     after_key: bool = False
     # Position novelty: set of (cell_x, cell_y) visited this episode
     visited_position_cells: set = field(default_factory=set)
+    # Награда за ATTACK: последний шаг, когда дали attack_use_reward
+    last_attack_reward_step: int = -999
 
 
 class RewardPolicy:
@@ -111,6 +113,7 @@ class RewardPolicy:
             "stage_step": 0.0,
             "stage_advance": 0.0,
             "backtrack": 0.0,
+            "attack_use": 0.0,
         }
         extra: dict[str, Any] = {}
         info_for_detectors = dict(info)
@@ -119,6 +122,14 @@ class RewardPolicy:
 
         # 1) Step penalty
         components["step"] = step_penalty_component(cfg)
+
+        # 1b) Небольшая награда за использование ATTACK (стимулирует ломать блоки за ключом)
+        action = info.get("action", None)
+        attack_use_val = getattr(cfg, "attack_use_reward", 0.0) or 0.0
+        attack_cooldown = max(1, getattr(cfg, "attack_use_cooldown_steps", 15))
+        if attack_use_val > 0 and action == 5 and (step - state.last_attack_reward_step) >= attack_cooldown:
+            components["attack_use"] = attack_use_val
+            state.last_attack_reward_step = step
 
         # 2) Death (уже учтён в env как terminated; здесь только величина для лога)
         out = death_penalty_component(cfg, terminated_by_death)

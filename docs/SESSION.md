@@ -134,7 +134,7 @@
 
 ## 5. Важные детали по коду
 
-- **Rollout при num_envs > 1:** в цикле по `rollout_steps` внутренний цикл по `num_envs`: для каждого env свой `frame_buffers[i]`, свой `envs[i].step(action)`. Данные складываются в общие списки `roll_obs`, `roll_acts`, … в порядке env0, env1, env0, env1, … При подсчёте GAE траектории разбиваются по env (индексы `i, i+num_envs, i+2*num_envs, ...`).
+- **Rollout при num_envs > 1:** в цикле по `rollout_steps` внутренний цикл по `num_envs`: для каждого env свой `frame_buffers[i]`, свой `envs[i].step(action)`. Шаги выполняются **последовательно** (env0.step → env1.step → …) в одном процессе; честной параллельности нет, поэтому throughput растёт не в num_envs раз. Данные складываются в общие списки в порядке env0, env1, env0, env1, …; GAE по траекториям каждого env отдельно (индексы `i, i+num_envs, ...`). См. `tools/diagnose_throughput.py` (S1_SEQUENTIAL_STEPPING) и рекомендации по subprocess/AsyncVectorEnv.
 - **EnvConfig.soft_reset:** по умолчанию True; при False поведение reset() как раньше (close + новый процесс + _skip_intro).
 - **EnvConfig.post_action_delay_ms:** 0 по умолчанию; при num_envs > 1 в train_ppo выставляется 50, если не передан `--post-action-delay-ms`.
 - **Тихий режим:** по умолчанию не печатаются сообщения `[perf]` (capture/prep/step); `EnvConfig.perf_log_interval = 0`. OpenMSX stdout/stderr пишутся в workdir (`openmsx_stdout.log`, `openmsx_stderr.log`), не в терминал. См. docs/CAPTURE.md.

@@ -204,7 +204,7 @@ def _default_ppo() -> dict:
         "lstm_hidden_size": 256,
         "sequence_length": 0,
         "nudge_right_steps": 0,
-        "stuck_nudge_steps": 20,
+        "stuck_nudge_steps": 0,
         "no_reset_handshake": False,
         "dry_run_seconds": 0.0,
         "summary_every": 10,
@@ -217,7 +217,7 @@ def _default_env_schema() -> dict:
     return {
         "rom_path": "VAMPIRE.ROM",
         "frame_size": (84, 84),
-        "action_repeat": 1,
+        "action_repeat": 2,
         "decision_fps": None,
         "capture_backend": "png",
         "post_action_delay_ms": 0.0,
@@ -260,15 +260,21 @@ def _default_capture() -> dict:
 # ---------------------------------------------------------------------------
 
 def _load_reward_config_strict(
-    path: str | None,
+    path_or_dict: str | dict | None,
     root: Path,
     novelty_override: float | None,
 ) -> tuple[Any, Path | None]:
-    """Load RewardConfig. If path is provided and file missing -> raise. Else default with log."""
+    """Load RewardConfig. path_or_dict: path (str), already-loaded dict (from snapshot), or None."""
     from msx_env.reward.config import RewardConfig
     from msx_env.reward import default_v1_config
 
-    if path:
+    if path_or_dict is not None:
+        if isinstance(path_or_dict, dict):
+            cfg = RewardConfig.from_dict(path_or_dict)
+            if novelty_override is not None:
+                cfg = _reward_config_with_novelty(cfg, novelty_override)
+            return cfg, None
+        path = path_or_dict
         p = (root / path).resolve() if not Path(path).is_absolute() else Path(path)
         if not p.exists():
             raise FileNotFoundError(
@@ -560,7 +566,7 @@ def load_config(argv: list[str] | None = None) -> ResolvedConfig:
     env_schema = EnvConfigSchema(
         rom_path=rom_path,
         frame_size=(84, 84),
-        action_repeat=getattr(args, "action_repeat", 1),
+        action_repeat=getattr(args, "action_repeat", 2),
         decision_fps=getattr(args, "decision_fps", None),
         capture_backend=getattr(args, "capture_backend", "png"),
         post_action_delay_ms=post_delay,
@@ -631,7 +637,7 @@ def load_config(argv: list[str] | None = None) -> ResolvedConfig:
         lstm_hidden_size=args.lstm_hidden_size,
         sequence_length=args.sequence_length,
         nudge_right_steps=max(0, getattr(args, "nudge_right_steps", 0)),
-        stuck_nudge_steps=max(0, getattr(args, "stuck_nudge_steps", 20)),
+        stuck_nudge_steps=max(0, getattr(args, "stuck_nudge_steps", 0)),
         no_reset_handshake=getattr(args, "no_reset_handshake", False),
         dry_run_seconds=max(0.0, args.dry_run_seconds),
         summary_every=max(1, args.summary_every),
@@ -683,6 +689,7 @@ def load_config(argv: list[str] | None = None) -> ResolvedConfig:
             "value_loss_coef": ppo_cfg.value_loss_coef,
             "num_envs": num_envs,
             "max_episode_steps": ppo_cfg.max_episode_steps,
+            "action_repeat": env_schema.action_repeat,
             "reward_config": reward_cfg.to_dict() if hasattr(reward_cfg, "to_dict") else {},
             "recurrent": ppo_cfg.recurrent,
             "lstm_hidden_size": ppo_cfg.lstm_hidden_size,
@@ -744,7 +751,7 @@ def build_resolved_config_from_args(args: argparse.Namespace, root: Path | None 
     env_schema = EnvConfigSchema(
         rom_path=rom_path,
         frame_size=(84, 84),
-        action_repeat=getattr(args, "action_repeat", 1),
+        action_repeat=getattr(args, "action_repeat", 2),
         decision_fps=getattr(args, "decision_fps", None),
         capture_backend=getattr(args, "capture_backend", "png"),
         post_action_delay_ms=post_delay,
@@ -815,7 +822,7 @@ def build_resolved_config_from_args(args: argparse.Namespace, root: Path | None 
         lstm_hidden_size=args.lstm_hidden_size,
         sequence_length=args.sequence_length,
         nudge_right_steps=max(0, getattr(args, "nudge_right_steps", 0)),
-        stuck_nudge_steps=max(0, getattr(args, "stuck_nudge_steps", 20)),
+        stuck_nudge_steps=max(0, getattr(args, "stuck_nudge_steps", 0)),
         no_reset_handshake=getattr(args, "no_reset_handshake", False),
         dry_run_seconds=max(0.0, args.dry_run_seconds),
         summary_every=max(1, args.summary_every),
@@ -860,6 +867,7 @@ def build_resolved_config_from_args(args: argparse.Namespace, root: Path | None 
             "value_loss_coef": ppo_cfg.value_loss_coef,
             "num_envs": num_envs,
             "max_episode_steps": ppo_cfg.max_episode_steps,
+            "action_repeat": env_schema.action_repeat,
             "reward_config": reward_cfg.to_dict() if hasattr(reward_cfg, "to_dict") else {},
             "recurrent": ppo_cfg.recurrent,
             "lstm_hidden_size": ppo_cfg.lstm_hidden_size,

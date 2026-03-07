@@ -162,4 +162,4 @@ def print_termination_block(
     print("  hp=%s lives=%s gameover=%s" % (info.get("hp_value"), info.get("lives_value"), info.get("gameover_flag")))
     print("  stage=%s stage_conf=%s" % (info.get("stage"), info.get("stage_conf")))
     print("  room_hash=%s frame_hash=%s" % (room_short, frame_hash))
-    print("  last_action=%s hold_ms=%s repeat=%s" % (action_name, "keydown_hold", getattr(cfg, "action_repeat", 1)))
+    print("  last_action=%s hold_ms=%s repeat=%s" % (action_name, "keydown_hold", getattr(cfg, "action_repeat", 2)))

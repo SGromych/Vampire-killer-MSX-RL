@@ -18,6 +18,7 @@ import random
 import sys
 import time
 from collections import deque, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
@@ -112,7 +113,7 @@ def _write_metrics_header(path: Path, run_id: str = "", hostname: str = "", pid:
             "stage00_exit_rate,stage00_exit_steps_mean,stage00_room_trans_mean,stage00_time_to_exit_steps,candles_broken_stage00,"
             "backtrack_rate_mean,room_dwell_steps_mean,door_encounter_count_mean,loop_len_max_mean,"
             "key_found_rate,door_found_rate,steps_after_key_total_mean,steps_after_key_until_exit_mean,steps_after_key_until_death_mean,"
-            "reward_step,reward_pickup,reward_death,reward_novelty,reward_position_novelty,reward_pingpong,reward_stuck,reward_key,reward_door,reward_backtrack,"
+            "reward_step,reward_pickup,reward_death,reward_novelty,reward_position_novelty,reward_pingpong,reward_stuck,reward_key,reward_door,reward_backtrack,reward_attack_use,"
             "reward_stage_step,reward_stage_advance,"
             "recurrent_hidden_norm_mean,recurrent_hidden_norm_std,recurrent_hidden_delta_mean,"
             "resume_count,last_resume_update,"
@@ -244,7 +245,7 @@ def _append_metrics(
         f"{components_avg.get('death', 0):.4f},{components_avg.get('novelty', 0):.4f},"
         f"{components_avg.get('position_novelty', 0):.4f},"
         f"{components_avg.get('pingpong', 0):.4f},{components_avg.get('stuck', 0):.4f},"
-        f"{components_avg.get('key', 0):.4f},{components_avg.get('door', 0):.4f},{components_avg.get('backtrack', 0):.4f},"
+        f"{components_avg.get('key', 0):.4f},{components_avg.get('door', 0):.4f},{components_avg.get('backtrack', 0):.4f},{components_avg.get('attack_use', 0):.4f},"
         f"{components_avg.get('stage_step', 0):.4f},{components_avg.get('stage_advance', 0):.4f},"
         f"{recurrent_hidden_norm_mean:.4f},{recurrent_hidden_norm_std:.4f},{recurrent_hidden_delta_mean:.4f},"
         f"{resume_count},{last_resume_update},"
@@ -438,7 +439,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--step-penalty", type=float, default=-0.001)
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--arch", choices=["default", "deep"], default="deep")
-    p.add_argument("--action-repeat", type=int, default=1, help="N внутренних шагов на 1 захват (backward compat: 1)")
+    p.add_argument("--action-repeat", type=int, default=2, help="N internal emulator steps per logical step (default 2)")
     p.add_argument("--decision-fps", type=float, default=None, help="фикс. частота решений (10–15 Hz), None=макс. скорость")
     p.add_argument("--capture-backend", choices=["png", "single", "window", "dxcam"], default="dxcam")
     p.add_argument("--num-envs", type=int, default=1, help="число параллельных env (уникальный workdir на инстанс)")
@@ -481,7 +482,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--debug-single-episode", action="store_true", help="запустить ровно 1 эпизод на каждый env, вывести reset/termination и выйти (для отладки)")
     p.add_argument("--no-reset-handshake", action="store_true", help="при num_envs>1 не включать reset handshake (для отладки, если кнопки в env 1 не работают)")
     p.add_argument("--nudge-right-steps", type=int, default=0, help="в начале каждого эпизода N шагов RIGHT (подталкивание вправо, чтобы не застревать на первом экране)")
-    p.add_argument("--stuck-nudge-steps", type=int, default=20, help="при застревании (stuck) N шагов по очереди RIGHT/LEFT/UP/DOWN для попытки выхода")
+    p.add_argument("--stuck-nudge-steps", type=int, default=0, help="при застревании (stuck) N шагов по очереди RIGHT/LEFT/UP/DOWN для попытки выхода; 0=выкл (не мешать обучению)")
     p.add_argument("--dump-hud-every-n-steps", type=int, default=0, help="fix-room-metrics: сохранять HUD crop каждые N шагов в run_dir/debug/ (0=выкл, напр. 300)")
     p.add_argument("--perf", action="store_true", help="throughput diagnostics: собирать t_action/t_capture/t_reward (p50/p95) в info")
     return p.parse_args()
@@ -728,7 +729,7 @@ def main() -> None:
         frame_size=(84, 84),
         terminated_on_death=True,
         max_episode_steps=args.max_episode_steps,
-        action_repeat=getattr(args, "action_repeat", 1),
+        action_repeat=getattr(args, "action_repeat", 2),
         decision_fps=getattr(args, "decision_fps", None),
         capture_backend=getattr(args, "capture_backend", "dxcam"),
         reward_config=reward_config,
@@ -827,6 +828,19 @@ def main() -> None:
             "Multi-env: num_envs=%s tmp_root=%s workdirs=%s post_action_delay_ms=%s",
             num_envs, tmp_root_abs, workdirs, base_cfg.post_action_delay_ms,
         )
+
+    logger.info("[env] action_repeat = %s", getattr(base_cfg, "action_repeat", 2))
+
+    capture_backend = getattr(base_cfg, "capture_backend", "png")
+    use_parallel_rollout = num_envs > 1 and capture_backend not in ("dxcam", "window")
+    if num_envs > 1:
+        if use_parallel_rollout:
+            logger.info("[rollout] parallel env stepping: num_envs=%s (ThreadPoolExecutor, capture=%s)", num_envs, capture_backend)
+        else:
+            logger.info(
+                "[rollout] sequential env stepping: num_envs=%s (capture_backend=%s is not thread-safe)",
+                num_envs, capture_backend,
+            )
 
     stack_size = FRAME_STACK
     arch = args.arch
@@ -1007,6 +1021,8 @@ def main() -> None:
     entropy_floor = getattr(args, "entropy_floor", 0.3)
     stuck_updates = getattr(args, "stuck_updates", 20)
 
+    step_executor = ThreadPoolExecutor(max_workers=num_envs) if use_parallel_rollout else None
+
     for update in range(start_update, args.epochs):
         model.train()
         roll_obs, roll_acts, roll_logp, roll_vals, roll_rews, roll_dones = [], [], [], [], [], []
@@ -1022,124 +1038,206 @@ def main() -> None:
         stuck_nudge_remaining = [0] * num_envs
 
         t_roll_start = time.perf_counter()
-        # Rollout: по каждому шагу проходим все env по очереди (env0, env1, env0, ...)
-        for _ in range(args.rollout_steps):
-            for i in range(num_envs):
-                x = torch.from_numpy(
-                    build_stacked_obs_single(frame_buffers[i], stack_size)
-                ).unsqueeze(0).to(device)
-                # stuck-nudge: при застревании пробовать RIGHT/LEFT/UP/DOWN по очереди
-                use_stuck_nudge = stuck_nudge_remaining[i] > 0 and stuck_nudge_steps > 0
-                if use_stuck_nudge:
-                    idx = (stuck_nudge_steps - stuck_nudge_remaining[i]) % len(stuck_nudge_dirs)
-                    nudge_action = stuck_nudge_dirs[idx]
-                    stuck_nudge_remaining[i] -= 1
-                with torch.no_grad():
+        if use_parallel_rollout:
+            # Parallel: phase 1 — actions; phase 2 — env.step() in threads; phase 3 — process results (works for 2, 3, 4+ envs)
+            for _ in range(args.rollout_steps):
+                actions_to_run = []
+                roll_data = []
+                for i in range(num_envs):
+                    x = torch.from_numpy(
+                        build_stacked_obs_single(frame_buffers[i], stack_size)
+                    ).unsqueeze(0).to(device)
+                    use_stuck_nudge = stuck_nudge_remaining[i] > 0 and stuck_nudge_steps > 0
+                    if use_stuck_nudge:
+                        idx = (stuck_nudge_steps - stuck_nudge_remaining[i]) % len(stuck_nudge_dirs)
+                        nudge_action = stuck_nudge_dirs[idx]
+                        stuck_nudge_remaining[i] -= 1
+                    with torch.no_grad():
+                        if use_recurrent:
+                            h_in, c_in = hidden_states[i]
+                            action, log_prob, value, next_hidden = model.get_action(x, deterministic=False, hidden=(h_in, c_in))
+                            roll_h.append(h_in)
+                            roll_c.append(c_in)
+                            roll_data.append((x, action, log_prob, value, next_hidden))
+                        else:
+                            action, log_prob, value, _ = model.get_action(x, deterministic=False)
+                            roll_data.append((x, action, log_prob, value, None))
+                    if use_stuck_nudge:
+                        action = nudge_action
+                    actions_to_run.append(action)
+
+                futures = [step_executor.submit(envs[i].step, actions_to_run[i]) for i in range(num_envs)]
+                results = [f.result() for f in futures]
+
+                for i in range(num_envs):
+                    obs, reward, terminated, truncated, info = results[i]
+                    x, action, log_prob, value, next_hidden = roll_data[i]
+                    if info.get("reward_stuck_event") and stuck_nudge_steps > 0 and stuck_nudge_remaining[i] == 0:
+                        stuck_nudge_remaining[i] = stuck_nudge_steps
+                    if "reward_components" not in info:
+                        reward = reward + args.step_penalty
+                    done = terminated or truncated
+
                     if use_recurrent:
-                        h_in, c_in = hidden_states[i]
-                        action, log_prob, value, next_hidden = model.get_action(x, deterministic=False, hidden=(h_in, c_in))
-                        roll_h.append(h_in)
-                        roll_c.append(c_in)
-                    else:
-                        action, log_prob, value, _ = model.get_action(x, deterministic=False)
-                if use_stuck_nudge:
-                    action = nudge_action
+                        if done:
+                            next_hidden = model.zero_hidden(1, device)
+                        hidden_states[i] = next_hidden
 
-                obs, reward, terminated, truncated, info = envs[i].step(action)
-                if info.get("reward_stuck_event") and stuck_nudge_steps > 0 and stuck_nudge_remaining[i] == 0:
-                    stuck_nudge_remaining[i] = stuck_nudge_steps
-                if "reward_components" not in info:
-                    reward = reward + args.step_penalty
-                done = terminated or truncated
+                    roll_components.append(info.get("reward_components", {}))
+                    frame_buffers[i].append(obs.copy())
+                    obs_list[i] = obs
+                    roll_obs.append(x.squeeze(0).cpu().numpy())
+                    roll_acts.append(action)
+                    roll_logp.append(log_prob.cpu().item())
+                    roll_vals.append(value.cpu().item())
+                    roll_rews.append(reward)
+                    roll_dones.append(done)
+                    episode_returns[i] += reward
+                    episode_steps_list[i] += 1
 
-                if use_recurrent:
                     if done:
-                        next_hidden = model.zero_hidden(1, device)
-                    hidden_states[i] = next_hidden
-
-                roll_components.append(info.get("reward_components", {}))
-
-                frame_buffers[i].append(obs.copy())
-                obs_list[i] = obs
-
-                roll_obs.append(x.squeeze(0).cpu().numpy())
-                roll_acts.append(action)
-                roll_logp.append(log_prob.cpu().item())
-                roll_vals.append(value.cpu().item())
-                roll_rews.append(reward)
-                roll_dones.append(done)
-
-                episode_returns[i] += reward
-                episode_steps_list[i] += 1
-
-                if done:
-                    ur = info.get("reward_unique_rooms", 0)
-                    if not isinstance(ur, (int, float)):
-                        ur = 0
-                    room_trans = int(info.get("reward_room_transition_count", 0))
-                    s00_steps = int(info.get("reward_stage00_exit_steps", -1))
-                    s00_ok = int(info.get("reward_stage00_exit_success", 0))
-                    s00_rt = int(info.get("reward_stage00_room_transitions", 0))
-                    backt = int(info.get("reward_backtrack_count", 0))
-                    room_dwell = float(info.get("reward_room_dwell_steps", -1.0))
-                    door_enc = int(info.get("reward_door_encounter_count", 0))
-                    loop_len = int(info.get("reward_loop_len_max", 0))
-                    # episode-metrics-fix: новые эпизодные метрики (debounced)
-                    ur_ep = int(info.get("reward_unique_rooms_ep", 0))
-                    room_trans_ep = int(info.get("reward_room_transitions_ep", 0))
-                    dwell_ep_mean = float(info.get("reward_room_dwell_steps_ep_mean", -1.0))
-                    s00_exit_recorded_ep = int(info.get("reward_stage00_exit_recorded_ep", 0))
-                    s00_exit_steps_ep = int(info.get("reward_stage00_exit_steps_ep", -1))
-                    backtrack_rate_ep = float(info.get("reward_backtrack_rate_ep", 0.0))
-                    stable_stage_ep = int(info.get("reward_stable_stage_ep", 0))
-                    episode_stats.append((
-                        float(episode_returns[i]),
-                        episode_steps_list[i],
-                        int(ur),
-                        bool(terminated),
-                        bool(info.get("reward_stuck_event", False)),
-                        int(info.get("stage", 0)),
-                        i,
-                        room_trans,
-                        s00_steps,
-                        s00_ok,
-                        s00_rt,
-                        backt,
-                        int(info.get("reward_steps_after_key_total", -1)),
-                        int(info.get("reward_steps_after_key_until_exit", -1)),
-                        int(info.get("reward_steps_after_key_until_death", -1)),
-                        room_dwell,
-                        door_enc,
-                        loop_len,
-                        ur_ep,
-                        room_trans_ep,
-                        dwell_ep_mean,
-                        s00_exit_recorded_ep,
-                        s00_exit_steps_ep,
-                        backtrack_rate_ep,
-                        stable_stage_ep,
-                    ))
-                    # soft_reset=True: не перезапускаем процесс openMSX, только «продолжить» клавишами
-                    obs_list[i], _ = envs[i].reset()
-                    frame_buffers[i].clear()
-                    for _ in range(stack_size):
-                        frame_buffers[i].append(obs_list[i].copy())
-                    # nudge-right: в начале эпизода N шагов RIGHT
-                    if nudge_right_steps > 0:
-                        for _ in range(nudge_right_steps):
-                            obs_list[i], _, term, trunc, _ = envs[i].step(ACTION_RIGHT)
-                            if term or trunc:
-                                obs_list[i], _ = envs[i].reset()
-                                frame_buffers[i].clear()
-                                for _ in range(stack_size):
-                                    frame_buffers[i].append(obs_list[i].copy())
-                                break
+                        ur = info.get("reward_unique_rooms", 0)
+                        if not isinstance(ur, (int, float)):
+                            ur = 0
+                        room_trans = int(info.get("reward_room_transition_count", 0))
+                        s00_steps = int(info.get("reward_stage00_exit_steps", -1))
+                        s00_ok = int(info.get("reward_stage00_exit_success", 0))
+                        s00_rt = int(info.get("reward_stage00_room_transitions", 0))
+                        backt = int(info.get("reward_backtrack_count", 0))
+                        room_dwell = float(info.get("reward_room_dwell_steps", -1.0))
+                        door_enc = int(info.get("reward_door_encounter_count", 0))
+                        loop_len = int(info.get("reward_loop_len_max", 0))
+                        ur_ep = int(info.get("reward_unique_rooms_ep", 0))
+                        room_trans_ep = int(info.get("reward_room_transitions_ep", 0))
+                        dwell_ep_mean = float(info.get("reward_room_dwell_steps_ep_mean", -1.0))
+                        s00_exit_recorded_ep = int(info.get("reward_stage00_exit_recorded_ep", 0))
+                        s00_exit_steps_ep = int(info.get("reward_stage00_exit_steps_ep", -1))
+                        backtrack_rate_ep = float(info.get("reward_backtrack_rate_ep", 0.0))
+                        stable_stage_ep = int(info.get("reward_stable_stage_ep", 0))
+                        episode_stats.append((
+                            float(episode_returns[i]), episode_steps_list[i], int(ur), bool(terminated),
+                            bool(info.get("reward_stuck_event", False)), int(info.get("stage", 0)), i,
+                            room_trans, s00_steps, s00_ok, s00_rt, backt,
+                            int(info.get("reward_steps_after_key_total", -1)),
+                            int(info.get("reward_steps_after_key_until_exit", -1)),
+                            int(info.get("reward_steps_after_key_until_death", -1)),
+                            room_dwell, door_enc, loop_len, ur_ep, room_trans_ep, dwell_ep_mean,
+                            s00_exit_recorded_ep, s00_exit_steps_ep, backtrack_rate_ep, stable_stage_ep,
+                        ))
+                        obs_list[i], _ = envs[i].reset()
+                        frame_buffers[i].clear()
+                        for _ in range(stack_size):
                             frame_buffers[i].append(obs_list[i].copy())
-                    stuck_nudge_remaining[i] = 0
-                    if not quiet and update % 5 == 0:
-                        logger.info(f"Update {update}  env{i} return={episode_returns[i]:.2f}  steps={episode_steps_list[i]}")
-                    episode_returns[i] = 0.0
-                    episode_steps_list[i] = 0
+                        if nudge_right_steps > 0:
+                            for _ in range(nudge_right_steps):
+                                obs_list[i], _, term, trunc, _ = envs[i].step(ACTION_RIGHT)
+                                if term or trunc:
+                                    obs_list[i], _ = envs[i].reset()
+                                    frame_buffers[i].clear()
+                                    for _ in range(stack_size):
+                                        frame_buffers[i].append(obs_list[i].copy())
+                                    break
+                                frame_buffers[i].append(obs_list[i].copy())
+                        stuck_nudge_remaining[i] = 0
+                        if not quiet and update % 5 == 0:
+                            logger.info(f"Update {update}  env{i} return={episode_returns[i]:.2f}  steps={episode_steps_list[i]}")
+                        episode_returns[i] = 0.0
+                        episode_steps_list[i] = 0
+        else:
+            # Sequential: original loop (required for dxcam/window capture — not thread-safe)
+            for _ in range(args.rollout_steps):
+                for i in range(num_envs):
+                    x = torch.from_numpy(
+                        build_stacked_obs_single(frame_buffers[i], stack_size)
+                    ).unsqueeze(0).to(device)
+                    use_stuck_nudge = stuck_nudge_remaining[i] > 0 and stuck_nudge_steps > 0
+                    if use_stuck_nudge:
+                        idx = (stuck_nudge_steps - stuck_nudge_remaining[i]) % len(stuck_nudge_dirs)
+                        nudge_action = stuck_nudge_dirs[idx]
+                        stuck_nudge_remaining[i] -= 1
+                    with torch.no_grad():
+                        if use_recurrent:
+                            h_in, c_in = hidden_states[i]
+                            action, log_prob, value, next_hidden = model.get_action(x, deterministic=False, hidden=(h_in, c_in))
+                            roll_h.append(h_in)
+                            roll_c.append(c_in)
+                        else:
+                            action, log_prob, value, _ = model.get_action(x, deterministic=False)
+                        if use_stuck_nudge:
+                            action = nudge_action
+
+                    obs, reward, terminated, truncated, info = envs[i].step(action)
+                    if info.get("reward_stuck_event") and stuck_nudge_steps > 0 and stuck_nudge_remaining[i] == 0:
+                        stuck_nudge_remaining[i] = stuck_nudge_steps
+                    if "reward_components" not in info:
+                        reward = reward + args.step_penalty
+                    done = terminated or truncated
+
+                    if use_recurrent:
+                        if done:
+                            next_hidden = model.zero_hidden(1, device)
+                        hidden_states[i] = next_hidden
+
+                    roll_components.append(info.get("reward_components", {}))
+                    frame_buffers[i].append(obs.copy())
+                    obs_list[i] = obs
+                    roll_obs.append(x.squeeze(0).cpu().numpy())
+                    roll_acts.append(action)
+                    roll_logp.append(log_prob.cpu().item())
+                    roll_vals.append(value.cpu().item())
+                    roll_rews.append(reward)
+                    roll_dones.append(done)
+                    episode_returns[i] += reward
+                    episode_steps_list[i] += 1
+
+                    if done:
+                        ur = info.get("reward_unique_rooms", 0)
+                        if not isinstance(ur, (int, float)):
+                            ur = 0
+                        room_trans = int(info.get("reward_room_transition_count", 0))
+                        s00_steps = int(info.get("reward_stage00_exit_steps", -1))
+                        s00_ok = int(info.get("reward_stage00_exit_success", 0))
+                        s00_rt = int(info.get("reward_stage00_room_transitions", 0))
+                        backt = int(info.get("reward_backtrack_count", 0))
+                        room_dwell = float(info.get("reward_room_dwell_steps", -1.0))
+                        door_enc = int(info.get("reward_door_encounter_count", 0))
+                        loop_len = int(info.get("reward_loop_len_max", 0))
+                        ur_ep = int(info.get("reward_unique_rooms_ep", 0))
+                        room_trans_ep = int(info.get("reward_room_transitions_ep", 0))
+                        dwell_ep_mean = float(info.get("reward_room_dwell_steps_ep_mean", -1.0))
+                        s00_exit_recorded_ep = int(info.get("reward_stage00_exit_recorded_ep", 0))
+                        s00_exit_steps_ep = int(info.get("reward_stage00_exit_steps_ep", -1))
+                        backtrack_rate_ep = float(info.get("reward_backtrack_rate_ep", 0.0))
+                        stable_stage_ep = int(info.get("reward_stable_stage_ep", 0))
+                        episode_stats.append((
+                            float(episode_returns[i]), episode_steps_list[i], int(ur), bool(terminated),
+                            bool(info.get("reward_stuck_event", False)), int(info.get("stage", 0)), i,
+                            room_trans, s00_steps, s00_ok, s00_rt, backt,
+                            int(info.get("reward_steps_after_key_total", -1)),
+                            int(info.get("reward_steps_after_key_until_exit", -1)),
+                            int(info.get("reward_steps_after_key_until_death", -1)),
+                            room_dwell, door_enc, loop_len, ur_ep, room_trans_ep, dwell_ep_mean,
+                            s00_exit_recorded_ep, s00_exit_steps_ep, backtrack_rate_ep, stable_stage_ep,
+                        ))
+                        obs_list[i], _ = envs[i].reset()
+                        frame_buffers[i].clear()
+                        for _ in range(stack_size):
+                            frame_buffers[i].append(obs_list[i].copy())
+                        if nudge_right_steps > 0:
+                            for _ in range(nudge_right_steps):
+                                obs_list[i], _, term, trunc, _ = envs[i].step(ACTION_RIGHT)
+                                if term or trunc:
+                                    obs_list[i], _ = envs[i].reset()
+                                    frame_buffers[i].clear()
+                                    for _ in range(stack_size):
+                                        frame_buffers[i].append(obs_list[i].copy())
+                                    break
+                                frame_buffers[i].append(obs_list[i].copy())
+                        stuck_nudge_remaining[i] = 0
+                        if not quiet and update % 5 == 0:
+                            logger.info(f"Update {update}  env{i} return={episode_returns[i]:.2f}  steps={episode_steps_list[i]}")
+                        episode_returns[i] = 0.0
+                        episode_steps_list[i] = 0
         t_roll_end = time.perf_counter()
 
         n_roll = len(roll_obs)
